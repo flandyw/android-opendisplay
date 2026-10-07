@@ -29,6 +29,10 @@ enum CaptureMode: String {
 enum SenderTransport {
     case tcp(NWEndpoint)                   // WiFi (Bonjour) or -host/-port override
     case usb(udid: String?, port: UInt16)  // native usbmuxd dial; nil = first device
+    /// The receiver dials us (reverse connect). Nothing to dial: connections
+    /// are handed in through `adoptIncoming`, and a dropped one is replaced by
+    /// the receiver redialing within the usual grace.
+    case incoming
 }
 
 @available(macOS 14.0, *)
@@ -82,6 +86,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     // The dial target. Written on `queue` only (after init): the controller
     // can migrate a live session between transports via switchTransport.
     private var transport: SenderTransport
+    // A connection a listener accepted, waiting for `connect()` to adopt it.
+    // Only touched on `queue`.
+    private var pendingIncoming: NWConnection?
     private let endpointName: String
     private let mode: CaptureMode
     private let quality: StreamQuality
@@ -173,6 +180,20 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private var helloContinuation: CheckedContinuation<PhoneInfo, Error>?
     private var inputInjector: InputInjector?
     private var clipboardSync: ClipboardSync?
+
+    // Zoom (`viewport`): the receiver's visible rect, applied as the capture's
+    // sourceRect. `viewportRequest` is what the receiver last asked for,
+    // `appliedViewport` what the running stream has; guarded by the lock
+    // because startCapture (a Task) and the control handler (`queue`) both
+    // touch them.
+    private let viewportLock = NSLock()
+    private var viewportRequest: CGRect?
+    private var appliedViewport: CGRect?
+    private var viewportApplying = false
+    private var captureConfig: SCStreamConfiguration?
+
+    /// `defaults` key behind the control panel's "Match device refresh rate".
+    static let matchRefreshKey = "matchReceiverRefresh"
 
     // Liveness: both sides ping every 2s; if nothing arrives for 5s the link
     // is half-open (e.g. usbmuxd accepted but the device is gone) — reconnect.
@@ -415,6 +436,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             try await startCapture(display: display,
                                    sourcePixelsWide: pixelsW, sourcePixelsHigh: pixelsH,
                                    receiver: info)
+            // Touch, pen, keyboard and clicks act on the main display being
+            // mirrored; without an injector they would be dropped.
+            inputInjector = InputInjector(displayID: display.displayID)
 
         case .extend:
             // awaitingWake is queue-confined — read it there before surfacing.
@@ -566,6 +590,14 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     /// Log once per session that a receiver's `panel` failed validation.
     private var loggedInvalidPanel = false
 
+    /// 60 fps unless the user turned on "Match device refresh rate" and the
+    /// receiver's panel is faster (`hello.refresh`).
+    private func targetFrameRate(for info: PhoneInfo) -> Int {
+        VideoStreamConfiguration.requestedFrameRate(
+            receiverRefresh: info.refresh,
+            matchRefresh: UserDefaults.standard.bool(forKey: Self.matchRefreshKey))
+    }
+
     /// HEVC when the receiver offers it and this Mac can encode that stream
     /// in hardware (see `VideoStreamConfiguration.preferredCodec`). The encoder
     /// is probed at the real stream size before the canvas is sized, so a Mac
@@ -699,6 +731,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         // session serial, which is at least orientation-stable.
         let arrangementKey = info.id ?? String(format: "serial-%08x", displaySerial)
         let sizeInPoints = CGSize(width: pointsWide, height: pointsHigh)
+        let refreshHz = Double(targetFrameRate(for: info))
         // Creating a display whose serial is still registered fails — e.g. a
         // just-quit instance's display lingers in WindowServer for a moment
         // after the process dies. Retry through that window instead of
@@ -750,6 +783,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                                           sizeInMillimeters: mm,
                                           serialNum: serial &+ totalOffset,
                                           productID: 0x4F53 &+ totalOffset,
+                                          refreshRate: refreshHz,
                                           restoreOrigin: restoreOrigin,
                                           onOriginChange: { origin, currentSize in
                                               DisplayArrangement.save(origin: origin, size: currentSize,
@@ -1126,6 +1160,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         // the desktop; presets keep scaling from the desktop as the receiver
         // presents it (#322).
         let presentable = info.facts.pixels
+        let requestedRate = targetFrameRate(for: info)
         func select(_ codec: String) throws -> VideoStreamConfiguration {
             mode == .extend
                 ? try VideoStreamConfiguration.makeForCanvas(
@@ -1136,7 +1171,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                     legacyCeiling: legacyCeiling,
                     receiverCapabilities: info.videoCaps,
                     displayMaxFrameRate: info.displayMaxFrameRate,
-                    presentable: presentable)
+                    presentable: presentable,
+                    requestedFramesPerSecond: requestedRate)
                 : try VideoStreamConfiguration.make(
                     source: source,
                     quality: quality,
@@ -1144,7 +1180,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                     legacyCeiling: legacyCeiling,
                     receiverCapabilities: info.videoCaps,
                     displayMaxFrameRate: info.displayMaxFrameRate,
-                    presentable: presentable)
+                    presentable: presentable,
+                    requestedFramesPerSecond: requestedRate)
         }
         var selected = try select(preferredCodec(for: info, source: source))
         var pixelsWide = selected.encodedSize.width
@@ -1170,6 +1207,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         // the encoder for ~13ms — headroom prevents SCK starvation drops.
         config.queueDepth = 8
         config.showsCursor = !localCursor
+        // A receiver that is zoomed in when the capture (re)starts keeps its crop.
+        let crop = currentViewportRequest()
+        config.sourceRect = ViewportCrop.sourceRect(
+            for: crop, displaySize: CGDisplayBounds(display.displayID).size)
 
         try Task.checkCancellation()
         guard !stopped else { throw CancellationError() }
@@ -1203,6 +1244,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
         self.stream = stream
+        noteCaptureConfiguration(config, appliedCrop: crop)
         do {
             try await stream.startCapture()
         } catch {
@@ -1283,7 +1325,12 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     func switchTransport(to newTransport: SenderTransport) {
         queue.async { [weak self] in
             guard let self, !self.stopped else { return }
-            let label = if case .usb = newTransport { "USB" } else { "WiFi" }
+            let label: String
+            switch newTransport {
+            case .usb: label = "USB"
+            case .tcp: label = "WiFi"
+            case .incoming: label = "reverse connection"
+            }
             Log.info("switching \(self.endpointName) to \(label)")
             self.transport = newTransport
             // Fresh grace window: if the new link can't come up either, the
@@ -1529,6 +1576,58 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         switch transport {
         case .tcp(let endpoint): connectTCP(endpoint)
         case .usb(let udid, let port): connectUSB(udid: udid, port: port)
+        case .incoming: connectIncoming()
+        }
+    }
+
+    /// Hand the sender a connection the receiver opened to us. The first one
+    /// becomes the session's link; a later one (the receiver redialing after a
+    /// drop, or replacing a half-open link) swaps the socket under the running
+    /// pipeline exactly like a transport switch does.
+    func adoptIncoming(_ conn: NWConnection) {
+        queue.async { [weak self] in
+            guard let self, !self.stopped else { conn.cancel(); return }
+            self.pendingIncoming?.cancel()
+            self.pendingIncoming = conn
+            if self.connection == nil, !self.everConnected {
+                self.connectIncoming()
+            } else {
+                self.switchTransport(to: .incoming)
+            }
+        }
+    }
+
+    private func connectIncoming() {
+        if let conn = pendingIncoming {
+            pendingIncoming = nil
+            dialGeneration += 1
+            connection = conn
+            conn.stateUpdateHandler = { [weak self] state in
+                guard let self else { return }
+                switch state {
+                case .ready:
+                    self.becomeReady(conn)
+                case .failed(let error):
+                    Log.info("incoming connection failed: \(error)")
+                    self.connectionReady = false
+                    self.scheduleReconnect()
+                case .cancelled:
+                    self.connectionReady = false
+                default:
+                    break
+                }
+            }
+            conn.start(queue: queue)
+            return
+        }
+        // Nothing to dial. Already carrying a connection: nothing to do.
+        guard connection == nil else { return }
+        if everConnected {
+            // Wait out the grace for the receiver to dial back in.
+            Task { await status("Waiting for \(endpointName) to reconnect…") }
+            scheduleReconnect()
+        } else {
+            reportGone("incoming connection from \(endpointName) never came up — ending session")
         }
     }
 
@@ -2425,6 +2524,15 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         case WireMessage.clip:
             if let text = obj["text"] as? String { clipboardSync?.receive(text) }
+        case WireMessage.clipImage:
+            if let encoded = obj["png"] as? String, let png = Data(base64Encoded: encoded) {
+                clipboardSync?.receiveImage(png)
+            }
+        case WireMessage.viewport:
+            if let x = obj["x"] as? Double, let y = obj["y"] as? Double,
+               let w = obj["w"] as? Double, let h = obj["h"] as? Double {
+                setViewport(ViewportCrop.normalized(x: x, y: y, w: w, h: h))
+            }
         case "scroll":
             if let dx = obj["dx"] as? Double, let dy = obj["dy"] as? Double {
                 inputInjector?.handleScroll(dx: dx, dy: dy)
@@ -3028,12 +3136,24 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     /// receiver version we still support.
     private func startClipboardSyncIfEnabled() {
         guard ClipboardSync.isEnabled, clipboardSync == nil else { return }
-        let sync = ClipboardSync { [weak self] text in
+        // Images only go to a receiver that said it can take them.
+        let receiverTakesImages = lastHello?.ext?.contains(WireCap.clipImage) == true
+        var imageSender: ((Data) -> Void)?
+        if receiverTakesImages {
+            imageSender = { [weak self] png in
+                let obj: [String: Any] = ["type": WireMessage.clipImage,
+                                          "png": png.base64EncodedString()]
+                guard let data = try? JSONSerialization.data(withJSONObject: obj),
+                      let json = String(data: data, encoding: .utf8) else { return }
+                self?.sendJSONFrame(json)
+            }
+        }
+        let sync = ClipboardSync(send: { [weak self] text in
             let obj: [String: Any] = ["type": WireMessage.clip, "text": text]
             guard let data = try? JSONSerialization.data(withJSONObject: obj),
                   let json = String(data: data, encoding: .utf8) else { return }
             self?.sendJSONFrame(json)
-        }
+        }, sendImage: imageSender)
         sync.start(on: queue)
         clipboardSync = sync
     }
@@ -3043,13 +3163,77 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         inputInjector?.releaseAllKeys()
         clipboardSync?.stop()
         clipboardSync = nil
+        // The receiver's zoom does not outlive its connection; the next one
+        // sends its rect again if it is still zoomed.
+        setViewport(nil)
+    }
+
+    // MARK: - Zoom (viewport)
+
+    private func currentViewportRequest() -> CGRect? {
+        viewportLock.lock()
+        defer { viewportLock.unlock() }
+        return viewportRequest
+    }
+
+    /// Remember the stream's configuration so a later `viewport` can update it.
+    private func noteCaptureConfiguration(_ config: SCStreamConfiguration, appliedCrop: CGRect?) {
+        viewportLock.lock()
+        captureConfig = config
+        appliedViewport = appliedCrop
+        viewportLock.unlock()
+        // The receiver may have zoomed while the stream was being built.
+        applyViewportIfNeeded()
+    }
+
+    /// `crop` is the visible part of the desktop, or nil for all of it.
+    private func setViewport(_ crop: CGRect?) {
+        viewportLock.lock()
+        viewportRequest = crop
+        viewportLock.unlock()
+        applyViewportIfNeeded()
+    }
+
+    /// Push the requested crop into the running capture, one update at a time.
+    /// A pinch sends many rects; while one update is in flight only the latest
+    /// request is kept, and it is applied as soon as the stream is free.
+    private func applyViewportIfNeeded() {
+        viewportLock.lock()
+        let stream = self.stream
+        guard !stopped, !viewportApplying, let stream, let config = captureConfig,
+              viewportRequest != appliedViewport else {
+            viewportLock.unlock()
+            return
+        }
+        viewportApplying = true
+        let wanted = viewportRequest
+        viewportLock.unlock()
+
+        config.sourceRect = ViewportCrop.sourceRect(
+            for: wanted, displaySize: CGDisplayBounds(captureDisplayID).size)
+        Task { [weak self] in
+            do {
+                try await stream.updateConfiguration(config)
+            } catch {
+                Log.info("viewport update failed: \(error.localizedDescription)")
+            }
+            guard let self else { return }
+            self.viewportLock.lock()
+            self.viewportApplying = false
+            // A failed update is not retried: the next rect gets a fresh try.
+            if self.stream === stream { self.appliedViewport = wanted }
+            self.viewportLock.unlock()
+            self.applyViewportIfNeeded()
+        }
     }
 
     private func sendWelcome() {
-        var caps = [WireCap.hover, WireCap.key, WireCap.click, WireCap.mode]
-        if ClipboardSync.isEnabled { caps.append(WireCap.clip) }
+        var caps = [WireCap.hover, WireCap.key, WireCap.click, WireCap.mode, WireCap.viewport]
+        if ClipboardSync.isEnabled { caps += [WireCap.clip, WireCap.clipImage] }
         let capsJSON = caps.map { "\"\($0)\"" }.joined(separator: ",")
-        sendJSONFrame("{\"type\":\"\(WireMessage.welcome)\",\"pv\":\(WireProtocol.version),\"min\":\(WireProtocol.minSupportedPeer),\"caps\":[\(capsJSON)]}")
+        // `mode` is what this session really is, so the receiver's mirror
+        // toggle starts out right even when the mode was changed on the Mac.
+        sendJSONFrame("{\"type\":\"\(WireMessage.welcome)\",\"pv\":\(WireProtocol.version),\"min\":\(WireProtocol.minSupportedPeer),\"caps\":[\(capsJSON)],\"mode\":\"\(mode.rawValue)\"}")
         startClipboardSyncIfEnabled()
     }
 

@@ -19,6 +19,16 @@ private enum SystemClickMetrics {
     }()
 }
 
+extension SystemShortcuts {
+    /// The user's current keyboard-shortcut settings (`AppleSymbolicHotKeys`),
+    /// read fresh so a change in System Settings takes effect immediately.
+    static func loadTable() -> [String: Any]? {
+        let domain = "com.apple.symbolichotkeys" as CFString
+        CFPreferencesAppSynchronize(domain)
+        return CFPreferencesCopyAppValue("AppleSymbolicHotKeys" as CFString, domain) as? [String: Any]
+    }
+}
+
 /// Turns normalized touch coordinates from the phone into mouse events on a
 /// target display. Touch semantics: finger down = left button down, finger
 /// move = drag, finger up = button up — i.e. the phone acts as a touchscreen.
@@ -156,10 +166,18 @@ final class InputInjector {
 
     // Keys currently held, so a dropped connection can release them.
     private var heldKeys = Set<CGKeyCode>()
+    // Keys whose press we handled ourselves; their release must not reach the Mac.
+    private var swallowedKeys = Set<Int>()
 
     /// `code` is a macOS virtual key code; `chars` is set only for plain typing.
     func handleKey(code: Int, down: Bool, mods: Int, chars: String?, isRepeat: Bool) {
         guard code >= 0, code <= Int(UInt16.max) else { return }
+        if !down, swallowedKeys.remove(code) != nil { return }
+        if down, swallowedKeys.contains(code) { return }   // auto-repeat of a handled press
+        if down, openMissionControlIfShortcutIsOff(code: code, mods: mods) {
+            swallowedKeys.insert(code)
+            return
+        }
         let key = CGKeyCode(code)
         guard let ev = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down) else { return }
         ev.flags = Self.flags(for: mods)
@@ -170,6 +188,24 @@ final class InputInjector {
         if isRepeat { ev.setIntegerValueField(.keyboardEventAutorepeat, value: 1) }
         ev.post(tap: .cghidEventTap)
         if down { heldKeys.insert(key) } else { heldKeys.remove(key) }
+    }
+
+    /// The tablet's Mission Control button and four-finger swipe send Ctrl+Up,
+    /// which does nothing while that shortcut is switched off in System
+    /// Settings. Opening the app directly keeps the button working either way.
+    private func openMissionControlIfShortcutIsOff(code: Int, mods: Int) -> Bool {
+        guard SystemShortcuts.hotKey(forKeyCode: code, mods: mods) == .missionControl else {
+            return false
+        }
+        guard SystemShortcuts.shouldOpenMissionControl(
+            keyCode: code, mods: mods, table: SystemShortcuts.loadTable()) else {
+            return false
+        }
+        NSWorkspace.shared.openApplication(
+            at: URL(fileURLWithPath: "/System/Applications/Mission Control.app"),
+            configuration: NSWorkspace.OpenConfiguration(),
+            completionHandler: nil)
+        return true
     }
 
     /// Key-up for everything still down; call when the connection goes away.

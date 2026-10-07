@@ -52,6 +52,18 @@ struct VideoStreamConfiguration: Equatable {
     static let h264Codec = "h264"
     static let hevcCodec = "hevc"
     static let defaultFramesPerSecond = 60
+    /// Ceiling when matching a fast receiver panel.
+    static let maximumFramesPerSecond = 120
+
+    /// The frame rate to ask for. 60 unless the user opted in to matching a
+    /// fast panel (`hello.refresh`, e.g. a 120 Hz tablet); slower panels never
+    /// raise it.
+    static func requestedFrameRate(receiverRefresh: Double?, matchRefresh: Bool) -> Int {
+        guard matchRefresh, let hz = receiverRefresh, hz.isFinite, hz >= 90 else {
+            return defaultFramesPerSecond
+        }
+        return min(Int(hz.rounded()), maximumFramesPerSecond)
+    }
     // H.264 High@L5.2 MaxFS and MaxMBPS. Keeping these as codec constraints,
     // rather than a model/display special case, is what makes 5K and future
     // receiver sizes follow the same selection path.
@@ -223,18 +235,21 @@ struct VideoStreamConfiguration: Equatable {
                               legacyCeiling: PixelSize? = nil,
                               receiverCapabilities: [VideoCapability]? = nil,
                               displayMaxFrameRate: Int? = nil,
-                              presentable: PixelSize? = nil) throws -> Self {
+                              presentable: PixelSize? = nil,
+                              requestedFramesPerSecond: Int = defaultFramesPerSecond) throws -> Self {
         let fromCanvas = try make(source: canvas, quality: quality, codec: codec,
                                   legacyCeiling: legacyCeiling,
                                   receiverCapabilities: receiverCapabilities,
                                   displayMaxFrameRate: displayMaxFrameRate,
-                                  presentable: presentable)
+                                  presentable: presentable,
+                                  requestedFramesPerSecond: requestedFramesPerSecond)
         guard panel != canvas,
               let fromPanel = try? make(source: panel, quality: quality, codec: codec,
                                         legacyCeiling: legacyCeiling,
                                         receiverCapabilities: receiverCapabilities,
                                         displayMaxFrameRate: displayMaxFrameRate,
-                                        presentable: presentable),
+                                        presentable: presentable,
+                                        requestedFramesPerSecond: requestedFramesPerSecond),
               fromPanel.encodedSize.width <= canvas.width,
               fromPanel.encodedSize.height <= canvas.height,
               fromPanel.encodedSize.width * fromPanel.encodedSize.height

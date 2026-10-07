@@ -456,4 +456,17 @@ final class StreamConfigurationTests: XCTestCase {
         XCTAssertEqual(budget.bytes, 0)
         XCTAssertFalse(budget.isFull(bitrate: 0, framesPerSecond: 0))
     }
+
+    func testRequestedFrameRateStaysAtSixtyUnlessMatchingIsOn() {
+        XCTAssertEqual(VideoStreamConfiguration.requestedFrameRate(receiverRefresh: 120, matchRefresh: false), 60)
+        XCTAssertEqual(VideoStreamConfiguration.requestedFrameRate(receiverRefresh: nil, matchRefresh: true), 60)
+        XCTAssertEqual(VideoStreamConfiguration.requestedFrameRate(receiverRefresh: 60, matchRefresh: true), 60)
+    }
+
+    func testRequestedFrameRateFollowsAFastPanelUpToTheCeiling() {
+        XCTAssertEqual(VideoStreamConfiguration.requestedFrameRate(receiverRefresh: 90, matchRefresh: true), 90)
+        XCTAssertEqual(VideoStreamConfiguration.requestedFrameRate(receiverRefresh: 119.88, matchRefresh: true), 120)
+        XCTAssertEqual(VideoStreamConfiguration.requestedFrameRate(receiverRefresh: 144, matchRefresh: true), 120)
+        XCTAssertEqual(VideoStreamConfiguration.requestedFrameRate(receiverRefresh: .nan, matchRefresh: true), 60)
+    }
 }

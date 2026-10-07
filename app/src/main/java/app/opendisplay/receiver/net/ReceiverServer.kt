@@ -8,6 +8,7 @@ import android.os.Looper
 import android.os.Process
 import android.util.Log
 import app.opendisplay.receiver.audio.AudioPlayer
+import app.opendisplay.receiver.clip.ImageClip
 import app.opendisplay.receiver.protocol.WireCaps
 import app.opendisplay.receiver.protocol.WireMessage
 import app.opendisplay.receiver.protocol.WireProtocol
@@ -95,6 +96,10 @@ class ReceiverServer(
     private val onCursorReset: () -> Unit = {},
     /** Mac clipboard text — invoked on the main thread. */
     private val onClipboard: (String) -> Unit = {},
+    /** Mac clipboard image (PNG bytes) — invoked on the main thread. */
+    private val onClipboardImage: (ByteArray) -> Unit = {},
+    /** The Mac's actual display mode (mirror = true) — invoked on the main thread. */
+    private val onMode: (mirror: Boolean) -> Unit = {},
 ) {
     private val tag = "ReceiverServer"
     private val appContext = context.applicationContext
@@ -422,6 +427,16 @@ class ReceiverServer(
         outbox.trySend(JSONObject().put("type", WireMessage.CLIP).put("text", text))
     }
 
+    /** Copy an image to the Mac. [png] must already fit [ImageClip.MAX_PNG_BYTES]. */
+    fun sendClipboardImage(png: ByteArray) {
+        if (!hasCap(WireCaps.CLIP_IMAGE) || png.isEmpty() || png.size > ImageClip.MAX_PNG_BYTES) return
+        outbox.trySend(
+            JSONObject()
+                .put("type", WireMessage.CLIP_IMAGE)
+                .put("png", android.util.Base64.encodeToString(png, android.util.Base64.NO_WRAP)),
+        )
+    }
+
     /** Ask the Mac to mirror (true) or extend (false) its desktop. */
     fun sendDisplayMode(mirror: Boolean): Boolean {
         if (!hasCap(WireCaps.MODE)) return false
@@ -714,6 +729,17 @@ class ReceiverServer(
                         if (caps != null) for (i in 0 until caps.length()) add(caps.optString(i))
                     }
                     Log.i(tag, "welcome from Mac pv=$pv caps=${capsFlow.value}")
+                    // The Mac says which mode this session really is, so the
+                    // sidebar toggle is right even after a Mac-side change.
+                    obj.optString("mode").takeIf { it.isNotEmpty() }?.let { mode ->
+                        mainHandler.post { onMode(mode == "mirror") }
+                    }
+                }
+                WireMessage.MODE -> {
+                    val mode = obj.optString("mode")
+                    if (mode == "mirror" || mode == "extend") {
+                        mainHandler.post { onMode(mode == "mirror") }
+                    }
                 }
                 WireMessage.UPDATE_REQUIRED -> {
                     Log.w(tag, "Mac requested update: ${obj.optString("message")}")
@@ -733,6 +759,17 @@ class ReceiverServer(
                     val ay = obj.optDouble("ay", 0.0)
                     if (nw > 0 && nh > 0 && png.isNotEmpty()) {
                         mainHandler.post { onCursorImage(png, nw, nh, ax, ay) }
+                    }
+                }
+                WireMessage.CLIP_IMAGE -> {
+                    val encoded = obj.optString("png")
+                    if (encoded.isNotEmpty() && encoded.length <= MAX_CLIP_IMAGE_BASE64) {
+                        val png = try {
+                            android.util.Base64.decode(encoded, android.util.Base64.DEFAULT)
+                        } catch (_: IllegalArgumentException) {
+                            null
+                        }
+                        if (png != null) mainHandler.post { onClipboardImage(png) }
                     }
                 }
                 WireMessage.CLIP -> {
@@ -913,6 +950,8 @@ class ReceiverServer(
     companion object {
         private const val RECONNECT_ATTEMPTS = 10
         private const val MAX_CLIP_CHARS = 256 * 1024
+        /** Base64 of the largest PNG we accept (a third larger than the bytes). */
+        private const val MAX_CLIP_IMAGE_BASE64 = ImageClip.MAX_PNG_BYTES / 3 * 4 + 16
 
         fun localIpv4Addresses(): List<String> {
             val out = ArrayList<String>()

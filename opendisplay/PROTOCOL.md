@@ -366,13 +366,16 @@ section 4.
 | `ping` | pv 1 | `drops`?, `encDrops`?, `netDrops`?, `pending`?, `inp50`?, `inp95`?, `capFps`? | Liveness + sender health |
 | `cursor` | pv 1 | `x`?, `y`?, `v` | Cursor position/visibility |
 | `cursorImg` | pv 1 | `nw`, `nh`, `ax`, `ay`, `png` | Cursor sprite |
-| `welcome` | pv 2 | `pv`, `min`, `caps`? | Sender's side of the version handshake |
+| `welcome` | pv 2 | `pv`, `min`, `caps`?, `mode`? | Sender's side of the version handshake |
 | `updateRequired` | pv 2 | `target`, `store`, `message` | Peer must update to continue |
 | `streamConfig` | pv 3 (additive) | `codec`, `width`, `height`, `framesPerSecond` | Selected video operating point |
 | `power` | pv 3 (additive) | `action` | Ask the receiver to power off (6.6) |
 | `key` | cap `key` | `code`, `down`, `mods`?, `chars`?, `repeat`? | Keyboard event; `code` is a macOS virtual key code |
 | `click` | cap `click` | `button`, `x`, `y`, `mods`? | Discrete click (`right`, `left`, `middle`) |
 | `clip` | cap `clip` | `text` | Plain-text clipboard, either direction, up to 256K characters |
+| `clipimg` | cap `clipimg` | `png` | Clipboard image, either direction: base64 PNG, at most 600 000 PNG bytes so it fits one 1 MiB control frame. Needs `clip` to be on |
+| `viewport` | cap `viewport` | `x`, `y`, `w`, `h`, `z`? | Receiver → sender: the part of the desktop a zoomed receiver is showing, in normalized desktop space. The sender crops its capture to it and encodes the crop at the full stream size, so zoom shows real detail. A rect covering (almost) the whole desktop clears the crop; a new connection starts uncropped |
+| `mode` | cap `mode` | `mode` | Receiver → sender: ask for `mirror` or `extend`. The sender also states the session's actual mode in `welcome.mode` |
 
 **`pong`** echoes the `t` from the receiver's `ping` unchanged and adds
 `mt`: milliseconds since the Unix epoch on the sender's clock at the moment
@@ -488,12 +491,17 @@ itself is intent.
 
 **`welcome`**: the sender's `pv` and `min` (the oldest receiver `pv` it
 still supports), and optional `caps`, the array of optional features the
-sender implements (`hover`, `key`, `click`, `clip`). A receiver sends the
+sender implements (`hover`, `key`, `click`, `mode`, `viewport`, and, while
+clipboard sync is on, `clip` and `clipimg`). `mode` (`mirror` or `extend`) is
+the mode of this session, so the receiver's toggle can start out right. A receiver sends the
 matching messages only when listed; caps, not `pv`, gate them. `mods` is a
 bitmask (shift=1, ctrl=2, opt=4, cmd=8) also accepted on `touch` and
 `click`; `touch` phase `hover` moves the cursor without clicking. `clip` is
 off by default on the Mac (defaults key `clipboardSync`), so it is listed only
-when enabled. `hello.refresh` and `hello.ext` are accepted and not yet applied. Sent in response to every `hello`. A receiver whose own
+when enabled. `hello.refresh` (the panel's refresh rate in Hz) sets the stream and
+virtual display rate, up to 120, when the user turns on "Match device refresh
+rate"; otherwise it stays at 60. `hello.ext` lists what the receiver can send
+or accept (`clipimg` gates the sender's image clipboard messages). Sent in response to every `hello`. A receiver whose own
 `pv` policy is not met by the sender (`welcome.pv < ` its minimum) is the
 only party that can detect an outdated sender and SHOULD tell its user to
 update the sender. A receiver that never gets a `welcome` at all is talking

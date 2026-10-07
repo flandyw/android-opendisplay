@@ -67,6 +67,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import app.opendisplay.receiver.clip.ImageClip
 import app.opendisplay.receiver.compat.DeviceReport
 import app.opendisplay.receiver.input.InputControls
 import app.opendisplay.receiver.input.MacKeys
@@ -120,14 +121,60 @@ class MainActivity : ComponentActivity() {
     private var clipboard: ClipboardManager? = null
     /** Last text we put on / read from the clipboard — stops sync echo loops. */
     private var lastSyncedClip: String? = null
+    /** Hash of the last image we put on / read from the clipboard — stops image echo loops. */
+    private var lastSyncedImage = 0
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
-        val text = clipboard?.primaryClip
-            ?.takeIf { it.itemCount > 0 }
-            ?.getItemAt(0)?.coerceToText(this)?.toString()
+        val clip = clipboard?.primaryClip ?: return@OnPrimaryClipChangedListener
+        val imageUri = ImageClip.imageUri(contentResolver, clip)
+        if (imageUri != null) {
+            sendClipboardImage(imageUri)
+            return@OnPrimaryClipChangedListener
+        }
+        val item = clip.takeIf { it.itemCount > 0 }?.getItemAt(0)
+        // A bare content URI (a file, a link to one) has no text worth sending.
+        val text = when {
+            item == null -> null
+            item.text != null -> item.text.toString()
+            item.uri == null -> item.coerceToText(this)?.toString()
+            else -> null
+        }
         if (!text.isNullOrEmpty() && text != lastSyncedClip) {
             lastSyncedClip = text
             if (::server.isInitialized) server.sendClipboard(text)
         }
+    }
+
+    private fun sendClipboardImage(uri: android.net.Uri) {
+        if (!::server.isInitialized || !server.hasCap(WireCaps.CLIP_IMAGE)) return
+        if (ImageClip.isOurs(this, uri)) return
+        // Decoding and re-encoding can take a moment; keep it off the UI thread.
+        Thread {
+            val png = try {
+                ImageClip.encodeForWire(contentResolver, uri)
+            } catch (_: Exception) {
+                null
+            } ?: return@Thread
+            val hash = png.contentHashCode()
+            if (hash == lastSyncedImage) return@Thread
+            lastSyncedImage = hash
+            server.sendClipboardImage(png)
+        }.start()
+    }
+
+    /** An image copied on the Mac: serve it to other apps through the clipboard. */
+    private fun receiveClipboardImage(png: ByteArray) {
+        val hash = png.contentHashCode()
+        lastSyncedImage = hash
+        Thread {
+            val uri = try {
+                ImageClip.store(this, png)
+            } catch (_: Exception) {
+                return@Thread
+            }
+            runOnUiThread {
+                clipboard?.setPrimaryClip(ClipData.newUri(contentResolver, "Mac image", uri))
+            }
+        }.start()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -223,6 +270,8 @@ class MainActivity : ComponentActivity() {
                 lastSyncedClip = text
                 clipboard?.setPrimaryClip(ClipData.newPlainText("Mac clipboard", text))
             },
+            onClipboardImage = ::receiveClipboardImage,
+            onMode = controls::setMirror,
         )
         touchMapper = TouchMapper(this, server, controls, onHaptic = ::haptic) { viewport ->
             latestViewport = viewport
@@ -273,6 +322,10 @@ class MainActivity : ComponentActivity() {
                 val controlsUi by controls.ui.collectAsState()
                 val hud by server.hud.collectAsState()
                 val caps by server.caps.collectAsState()
+                // A fresh Mac session knows nothing of our zoom; say it again.
+                LaunchedEffect(caps) {
+                    if (caps.isNotEmpty()) touchMapper.resendViewport()
+                }
                 // Keep the last frame up while the Mac rebuilds the display.
                 val showStream = rememberStreamPresence(state.streaming)
                 var hint by remember { mutableStateOf(!prefs.getBoolean(KEY_HINT_SEEN, false)) }

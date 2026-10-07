@@ -16,6 +16,9 @@ final class VirtualDisplay {
     private let display: CGVirtualDisplay
     private var settings: CGVirtualDisplaySettings
     private let maxPixelsPerAxis: Int
+    /// Hz of every mode this display offers. A receiver with a fast panel can
+    /// ask for more than the usual 60 (see `VideoStreamConfiguration.requestedFrameRate`).
+    private let refreshRate: Double
     private(set) var pointsWide: Int
     private(set) var pointsHigh: Int
     /// Backing scale: 2 (HiDPI) or 1. A resize may change it.
@@ -45,11 +48,13 @@ final class VirtualDisplay {
     init?(name: String, pointsWide: Int, pointsHigh: Int, scale: Int = 2,
           descriptorMaxPixelsPerAxis: Int, sizeInMillimeters: CGSize,
           serialNum: UInt32 = 0x0001, productID: UInt32 = 0x4F53,
+          refreshRate: Double = 60,
           restoreOrigin: CGPoint? = nil,
           onOriginChange: ((CGPoint, CGSize) -> Void)? = nil) {
         self.pointsWide = pointsWide
         self.pointsHigh = pointsHigh
         self.scale = scale < 2 ? 1 : 2
+        self.refreshRate = refreshRate
         // Reserve the longer orientation on both axes. The fixed headroom also
         // covers later receiver scaling changes (for example Larger Text to
         // More Space) without destroying and recreating the virtual display.
@@ -82,7 +87,7 @@ final class VirtualDisplay {
         settings = CGVirtualDisplaySettings()
         settings.hiDPI = self.scale == 2 ? 1 : 0
         settings.modes = [
-            CGVirtualDisplayMode(width: UInt(pointsWide), height: UInt(pointsHigh), refreshRate: 60)
+            CGVirtualDisplayMode(width: UInt(pointsWide), height: UInt(pointsHigh), refreshRate: CGFloat(refreshRate))
         ]
         guard display.apply(settings) else {
             Log.info("CGVirtualDisplay applySettings FAILED")
@@ -133,7 +138,7 @@ final class VirtualDisplay {
         let newSettings = CGVirtualDisplaySettings()
         newSettings.hiDPI = scale == 2 ? 1 : 0
         newSettings.modes = [
-            CGVirtualDisplayMode(width: UInt(pointsWide), height: UInt(pointsHigh), refreshRate: 60)
+            CGVirtualDisplayMode(width: UInt(pointsWide), height: UInt(pointsHigh), refreshRate: CGFloat(refreshRate))
         ]
         guard display.apply(newSettings) else {
             Log.info("virtual display \(display.displayID) applySettings FAILED during resize")

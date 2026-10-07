@@ -95,12 +95,21 @@ enum MainWindow {
 enum ConnectionTarget: Hashable {
     case usb(udid: String?)           // wired via built-in usbmuxd; nil = first device
     case wifi(NWBrowser.Result)       // discovered via Bonjour
+    case android(serial: String)      // wired Android device, reached through `adb forward`
+    case reverse(host: String)        // an Android receiver that dialed this Mac (reverse connect)
+
+    var isReverse: Bool {
+        if case .reverse = self { return true }
+        return false
+    }
 
     /// Stable identity for sessions and persistence — survives Bonjour
     /// re-discovery (fresh NWBrowser.Result) and USB replugs (new DeviceID).
     var sessionID: String {
         switch self {
         case .usb(let udid): return "usb:\(udid ?? "first")"
+        case .android(let serial): return "android:\(serial)"
+        case .reverse(let host): return "reverse:\(host)"
         case .wifi(let result):
             if case .service(let name, _, _, _) = result.endpoint { return "wifi:\(name)" }
             return "wifi:unknown"
@@ -152,7 +161,23 @@ final class DeviceSession: ObservableObject, Identifiable {
     // rather than WiFi — reported by the sender once connected.
     @Published var wired = false
 
-    var transportLabel: String { onUSB ? "USB" : wired ? "Cable" : "WiFi" }
+    var transportLabel: String {
+        switch target {
+        case .android: return "USB"
+        case .reverse: return "Reverse"
+        default: return onUSB ? "USB" : wired ? "Cable" : "WiFi"
+        }
+    }
+
+    /// Whether the receiver's Bonjour advertisement says anything about this
+    /// session. A cabled or reverse-connected Android has no such record to
+    /// lose, so the service-withdrawn check must leave it alone.
+    var usesBonjour: Bool {
+        switch target {
+        case .android, .reverse: return false
+        default: return true
+        }
+    }
 
     // The Display size control (extend only): the choice for this device
     // and what each choice gives on it, from the latest hello.
@@ -228,6 +253,48 @@ final class SenderController: ObservableObject {
 
     var running: Bool { !sessions.isEmpty }
 
+    // Android over USB: devices adb sees, and the local port forwarded to
+    // each one's receiver. Empty when adb isn't installed.
+    // Opt-in: looking for devices runs `adb`, which starts adb's background
+    // server, and a server of a different adb version than another tool's
+    // (Android Studio, say) can restart theirs.
+    @Published var adbDetectionEnabled = UserDefaults.standard.bool(forKey: "adbDetection") {
+        didSet {
+            UserDefaults.standard.set(adbDetectionEnabled, forKey: "adbDetection")
+            if adbDetectionEnabled {
+                adb.start()
+                adbAvailable = adb.available
+            } else {
+                adb.stop()
+            }
+        }
+    }
+    @Published private(set) var adbDevices: [AdbDevice] = []
+    @Published private(set) var adbAvailable = true
+    private var adbPorts: [String: UInt16] = [:]
+    private let adb = AdbBridge()
+    // Receivers that dial this Mac instead of the other way round. Off unless
+    // the user turns it on: a listener lets anything on the network ask to see
+    // and drive this Mac, so each new device is also confirmed once.
+    private let reverseListener = ReverseListener()
+    @Published var reverseConnectEnabled = UserDefaults.standard.bool(forKey: "reverseConnect") {
+        didSet {
+            UserDefaults.standard.set(reverseConnectEnabled, forKey: "reverseConnect")
+            if reverseConnectEnabled {
+                reverseListener.start()
+            } else {
+                reverseListener.stop()
+                sessions.filter { $0.target.isReverse }.forEach { end($0) }
+            }
+        }
+    }
+    @Published private(set) var reverseAllowedHosts = Set(
+        UserDefaults.standard.stringArray(forKey: "reverseAllowedHosts") ?? []) {
+        didSet { UserDefaults.standard.set(Array(reverseAllowedHosts), forKey: "reverseAllowedHosts") }
+    }
+
+    func forgetReverseDevices() { reverseAllowedHosts = [] }
+
     private var browser: NWBrowser?
     private var usbWatcher: UsbmuxDeviceWatcher?
 
@@ -301,6 +368,60 @@ final class SenderController: ObservableObject {
             self.wifiAutoConnectArmed = true
             self.autoConnect()
         }
+        adb.onChange = { [weak self] in
+            guard let self else { return }
+            self.adbDevices = self.adb.devices
+            self.adbPorts = self.adb.ports
+            self.autoConnect()
+        }
+        if adbDetectionEnabled {
+            adb.start()
+            adbAvailable = adb.available
+        }
+        reverseListener.onConnection = { [weak self] connection in
+            self?.acceptReverse(connection)
+        }
+        if reverseConnectEnabled { reverseListener.start() }
+    }
+
+    /// Whether to take a connection from [host]: this Mac itself (an
+    /// `adb reverse` tunnel) and devices the user already approved go straight
+    /// through; anything else is asked about first.
+    private func approveReverse(host: String) -> Bool {
+        if host == "127.0.0.1" || host == "::1" || reverseAllowedHosts.contains(host) { return true }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Allow the device at \(host) to use this Mac's screen?"
+        alert.informativeText = "A device at \(host) opened a connection to OpenDisplay. If you allow it, "
+            + "it will show this Mac's screen and can control the Mac with touch and keyboard. "
+            + "Only allow a device you recognize."
+        alert.addButton(withTitle: "Allow")
+        alert.addButton(withTitle: "Don't Allow")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        reverseAllowedHosts.insert(host)
+        return true
+    }
+
+    /// A receiver dialed us. Reconnections of a known one are handed to its
+    /// session; a new one gets a session of its own, started with the
+    /// connection already in hand.
+    private func acceptReverse(_ connection: NWConnection) {
+        let host = ReverseListener.peerHost(of: connection)
+        let target = ConnectionTarget.reverse(host: host)
+        Log.info("reverse connection from \(host)")
+        guard reverseConnectEnabled, approveReverse(host: host) else {
+            Log.info("reverse connection from \(host) refused")
+            connection.cancel()
+            return
+        }
+        if let existing = session(for: target.sessionID), !existing.failed {
+            existing.sender.adoptIncoming(connection)
+            return
+        }
+        // A device that is also reachable another way drops its twin once its
+        // hello names it (see `dedupeSessions`).
+        connect(to: target, incoming: connection)
     }
 
     private func startBrowsing() {
@@ -362,15 +483,47 @@ final class SenderController: ObservableObject {
             return direct
         }
         return sessions.first { s in
-            guard !s.failed, case .usb(let udid) = s.target else { return false }
-            if let id = txtID(of: result), s.deviceID == id { return true }
-            if let udid, let device = usbDevices.first(where: { $0.udid == udid }),
-               sameDevice(result, device) { return true }
-            // Browse results routinely lack their TXT record and the USB
-            // device is gone after a failover — the service name is then
-            // the only remaining link to the session.
-            let name = serviceName(of: result)
-            return name != nil && (name == s.wifiServiceName || name == s.name)
+            guard !s.failed else { return false }
+            switch s.target {
+            case .usb(let udid):
+                if let id = txtID(of: result), s.deviceID == id { return true }
+                if let udid, let device = usbDevices.first(where: { $0.udid == udid }),
+                   sameDevice(result, device) { return true }
+                // Browse results routinely lack their TXT record and the USB
+                // device is gone after a failover — the service name is then
+                // the only remaining link to the session.
+                let name = serviceName(of: result)
+                return name != nil && (name == s.wifiServiceName || name == s.name)
+            case .android, .reverse:
+                // Same device by install id; Android advertises it in TXT. An
+                // Android's advertised name is its model, which is also what
+                // adb reports, so a name match covers records without TXT.
+                if let id = txtID(of: result), s.deviceID == id { return true }
+                let name = serviceName(of: result)
+                return name != nil && (name == s.name || name == s.wifiServiceName)
+            case .wifi:
+                return false
+            }
+        }
+    }
+
+    /// Same Android over the cable? Strong match: the install id this device
+    /// announced in a hello. Fallback: its Bonjour name is its model, which is
+    /// also what adb reports.
+    private func sameAndroid(_ result: NWBrowser.Result, _ device: AdbDevice) -> Bool {
+        if let id = txtID(of: result), installIDByUDID["adb:\(device.serial)"] == id { return true }
+        return serviceName(of: result) == device.displayName
+    }
+
+    /// The session (over any path) already serving this adb device.
+    private func activeSession(coveringAndroid device: AdbDevice) -> DeviceSession? {
+        let own = ConnectionTarget.android(serial: device.serial).sessionID
+        if let direct = session(for: own), !direct.failed { return direct }
+        let knownID = installIDByUDID["adb:\(device.serial)"]
+        return sessions.first { s in
+            guard !s.failed else { return false }
+            if let knownID, s.deviceID == knownID { return true }
+            return s.name == device.displayName || s.wifiServiceName == device.displayName
         }
     }
 
@@ -394,6 +547,14 @@ final class SenderController: ObservableObject {
             } else if !usbDisabled.contains("usb:\(device.udid)") {
                 connect(to: .usb(udid: device.udid))
             }
+        }
+        // Android over the cable: plug in and go, like an iPhone. A session that
+        // already serves the device over another path is left alone.
+        for device in adbDevices where device.isReady && adbPorts[device.serial] != nil {
+            let target = ConnectionTarget.android(serial: device.serial)
+            guard !usbDisabled.contains(target.sessionID),
+                  activeSession(coveringAndroid: device) == nil else { continue }
+            connect(to: target)
         }
         guard wifiAutoConnectArmed, Date() < wifiAutoConnectDeadline else { return }
         for result in discovered {
@@ -489,7 +650,7 @@ final class SenderController: ObservableObject {
     /// withdrawal that persists counts. One-shot, guarded re-check, so
     /// overlapping browse events at worst repeat an idempotent call.
     private func endSessionsWhoseServiceVanished() {
-        for session in sessions where !session.onUSB {
+        for session in sessions where !session.onUSB && session.usesBonjour {
             guard wifiService(for: session) == nil else { continue }
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self, weak session] in
                 guard let self, let session,
@@ -519,13 +680,25 @@ final class SenderController: ObservableObject {
         // Failed sessions hold no pipeline: a USB corpse must never win the
         // "keep the cable" rule against a working WiFi session.
         let usbSessionIDs = Set(sessions.compactMap { s -> String? in
-            if case .usb = s.target, !s.failed { return s.deviceID }
-            return nil
+            switch s.target {
+            case .usb, .android: return s.failed ? nil : s.deviceID
+            default: return nil
+            }
         })
         let cabledNames = Set(usbDevices.compactMap { device -> String? in
             guard let s = session(for: "usb:\(device.udid)"), !s.failed else { return nil }
             return device.name
         })
+        // An Android that dialed in chose that link: its receiver replaced
+        // whatever it had before. Any other session for it would redial and
+        // take it back, and the two would trade the receiver forever.
+        for reverse in sessions where reverse.target.isReverse && !reverse.failed {
+            guard let id = reverse.deviceID else { continue }
+            for twin in sessions where twin !== reverse && !twin.target.isReverse && twin.deviceID == id {
+                Log.info("\(reverse.id) is the device's live link — dropping its twin \(twin.id)")
+                end(twin)
+            }
+        }
         for s in sessions {
             guard case .wifi(let result) = s.target else { continue }
             let duplicate = (s.deviceID.map { usbSessionIDs.contains($0) } ?? false)
@@ -549,6 +722,10 @@ final class SenderController: ObservableObject {
             return udid == nil ? "Manual (\(host):\(port))" : "iPhone / iPad"
         case .wifi(let result):
             return serviceName(of: result) ?? "WiFi device"
+        case .android(let serial):
+            return adbDevices.first(where: { $0.serial == serial })?.displayName ?? "Android"
+        case .reverse:
+            return "Android"
         }
     }
 
@@ -575,7 +752,7 @@ final class SenderController: ObservableObject {
     }
 
     func connect(to target: ConnectionTarget, userInitiated: Bool = false,
-                 awaitingWake: Bool = false) {
+                 awaitingWake: Bool = false, incoming: NWConnection? = nil) {
         let id = target.sessionID
         if let existing = session(for: id) {
             // A failed session holds no pipeline — replace the corpse
@@ -596,6 +773,9 @@ final class SenderController: ObservableObject {
                 .flatMap { activeSession(coveringUSB: $0) }
         case .wifi(let result):
             covering = activeSession(coveringWiFi: result)
+        case .android(let serial):
+            covering = adbDevices.first(where: { $0.serial == serial })
+                .flatMap { activeSession(coveringAndroid: $0) }
         default:
             covering = nil
         }
@@ -607,7 +787,8 @@ final class SenderController: ObservableObject {
 
         // Connecting a device clears its "don't auto-connect" state.
         switch target {
-        case .usb: usbDisabled.remove(id)
+        case .usb, .android: usbDisabled.remove(id)
+        case .reverse: break
         case .wifi(let result):
             wifiRemembered.insert(id)
             if userInitiated, let name = serviceName(of: result) { cableOptOut.remove(name) }
@@ -626,6 +807,13 @@ final class SenderController: ObservableObject {
             }
         case .wifi(let result):
             transport = .tcp(result.endpoint)
+        case .android(let serial):
+            // The forward was set up by AdbBridge; without it there is nothing to dial.
+            guard let forwarded = adbPorts[serial],
+                  let localPort = NWEndpoint.Port(rawValue: forwarded) else { return }
+            transport = .tcp(.hostPort(host: "127.0.0.1", port: localPort))
+        case .reverse:
+            transport = .incoming
         }
 
         let name = label(for: target)
@@ -657,6 +845,9 @@ final class SenderController: ObservableObject {
             }
             if case .usb(let udid?) = session.target, let installID = info.id {
                 self.installIDByUDID[udid] = installID
+            }
+            if case .android(let serial) = session.target, let installID = info.id {
+                self.installIDByUDID["adb:\(serial)"] = installID
             }
             self.dedupeSessions()
             // The learned identity may reveal that this WiFi session's device
@@ -720,6 +911,8 @@ final class SenderController: ObservableObject {
             self.end(session)
         }
         sessions.append(session)
+        // Hand over before start(): both queue work on the sender's queue, in order.
+        if let incoming { sender.adoptIncoming(incoming) }
         Task {
             do {
                 try await sender.start()
@@ -740,7 +933,8 @@ final class SenderController: ObservableObject {
     /// User-initiated disconnect: also opt the device out of auto-connect.
     func disconnect(_ session: DeviceSession) {
         switch session.target {
-        case .usb: usbDisabled.insert(session.id)
+        case .usb, .android: usbDisabled.insert(session.id)
+        case .reverse: break   // the receiver redials; nothing here to opt out of
         case .wifi:
             wifiRemembered.remove(session.id)
             if let name = session.wifiServiceName, everOnCable.contains(name) {
@@ -775,7 +969,9 @@ final class SenderController: ObservableObject {
     /// Mode/quality apply per-pipeline at construction — rebuild every session.
     func restartAll() {
         guard running else { return }
-        let targets = sessions.map(\.target)
+        // A reverse session can't be redialed from here: its receiver dials
+        // back in by itself once the old connection closes.
+        let targets = sessions.map(\.target).filter { !$0.isReverse }
         sessions.forEach { $0.sender.stop() }
         sessions.removeAll()
         targets.forEach { connect(to: $0) }
@@ -827,6 +1023,23 @@ final class SenderController: ObservableObject {
                     ?? session(for: usbTarget.sessionID)?.deviceKind
                     ?? "iPhone / iPad",
                 usbTarget: usbTarget,
+                wifiTarget: twin.map { .wifi($0) }))
+        }
+        for device in adbDevices {
+            let twin = discovered.first { sameAndroid($0, device) }
+            if let twin, let name = serviceName(of: twin) { mergedServices.insert(name) }
+            let target = ConnectionTarget.android(serial: device.serial)
+            coveredSessionIDs.insert(target.sessionID)
+            if let twin { coveredSessionIDs.insert(ConnectionTarget.wifi(twin).sessionID) }
+            if let covering = activeSession(coveringAndroid: device) {
+                coveredSessionIDs.insert(covering.id)
+            }
+            let ready = device.isReady && adbPorts[device.serial] != nil
+            entries.append(DeviceEntry(
+                id: "adb:\(device.serial)",
+                name: device.isReady ? device.displayName
+                    : "\(device.displayName) — allow USB debugging on the device",
+                usbTarget: ready ? target : nil,
                 wifiTarget: twin.map { .wifi($0) }))
         }
         if UserDefaults.standard.object(forKey: "host") != nil {
@@ -923,6 +1136,13 @@ struct ContentView: View {
     // if Sparkle ever fails to start); the button just disables itself then.
     let updater: SPUStandardUpdaterController?
 
+    // Options (UserDefaults-backed, read by the sender / injector).
+    @AppStorage(ClipboardSync.defaultsKey) private var clipboardSync = false
+    @AppStorage("matchReceiverRefresh") private var matchRefresh = false
+    @AppStorage("penBarrel2Action") private var penBarrel2Action = "none"
+    // Shortcuts the tablet's gestures use that are switched off in System Settings.
+    @State private var disabledShortcuts: [SymbolicHotKey] = []
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -933,7 +1153,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("OpenDisplay")
                         .font(.title3.bold())
-                    Text("Your iPads, iPhones and Macs as extra displays")
+                    Text("Your iPads, iPhones, Android devices and Macs as extra displays")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -952,6 +1172,11 @@ struct ContentView: View {
                 Section("Devices") {
                     if controller.deviceEntries.isEmpty {
                         Text("No devices found — plug one in via USB, or open the OpenDisplay app on a device on this WiFi network.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if controller.adbDetectionEnabled && !controller.adbAvailable {
+                        Text("For Android over USB, install Android platform-tools (brew install android-platform-tools) and enable USB debugging on the device.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1011,6 +1236,63 @@ struct ContentView: View {
                     }
                     if controller.presentation == .background {
                         Text("No menu bar or Dock icon — streaming keeps running. Open the OpenDisplay app again (Spotlight/Finder) to show this window.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Section("Options") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("Sync clipboard with devices", isOn: $clipboardSync)
+                            .onChange(of: clipboardSync) { controller.restartAll() }
+                        Text("Text and images you copy move between this Mac and a connected Android device. Items marked as passwords are never sent.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("Match device refresh rate (experimental)", isOn: $matchRefresh)
+                            .onChange(of: matchRefresh) { controller.restartAll() }
+                        Text("Streams up to 120 fps to a device with a faster screen. Uses more bandwidth and CPU; turn it off if the picture stutters.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("Detect Android devices over USB", isOn: $controller.adbDetectionEnabled)
+                        Text("Uses adb (Android platform-tools) with USB debugging on, and connects when you plug in. Starts adb's background server if it isn't already running.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("Let Android devices connect to this Mac", isOn: $controller.reverseConnectEnabled)
+                        Text("For networks that block this Mac from reaching the device (guest Wi-Fi, client isolation). The device opens the connection, and you approve each new one. Leave off if you don't need it.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if !controller.reverseAllowedHosts.isEmpty {
+                            Button("Forget approved devices (\(controller.reverseAllowedHosts.count))") {
+                                controller.forgetReverseDevices()
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                    Picker("Pen side button", selection: $penBarrel2Action) {
+                        Text("Nothing").tag("none")
+                        Text("Right-click").tag("right")
+                        Text("Middle-click").tag("middle")
+                    }
+                    .help("What the stylus's second button does (squeeze or double-tap on pens that have one). The first button is always a right-click.")
+                }
+
+                if !disabledShortcuts.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        LabeledContent("Shortcuts") {
+                            Button("Open Keyboard Settings") {
+                                if let url = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension") {
+                                    NSWorkspace.shared.open(url)
+                                }
+                            }
+                            .controlSize(.small)
+                        }
+                        Text("Device gestures for \(disabledShortcuts.map(\.title).joined(separator: ", ")) need those shortcuts turned on under Keyboard Shortcuts → Mission Control.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1086,6 +1368,11 @@ struct ContentView: View {
             .padding(.vertical, 10)
         }
         .frame(width: 440, height: 540)
+        .onAppear {
+            // Mission Control itself is opened directly when its shortcut is off.
+            disabledShortcuts = SystemShortcuts.disabled(in: SystemShortcuts.loadTable())
+                .filter { $0 != .missionControl }
+        }
     }
 
     @ViewBuilder

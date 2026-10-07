@@ -24,8 +24,9 @@ struct PhoneInfo: Decodable {
     let panel: PanelInfo? // the receiver's panel facts (PROTOCOL.md 6.7);
                           // absent on older receivers → legacy facts
 
-    let refresh: Double?  // receiver's preferred refresh rate in Hz; optional,
-                          // not yet applied to the virtual display
+    let refresh: Double?  // receiver's panel refresh rate in Hz; used for the
+                          // stream and virtual display when "Match device
+                          // refresh rate" is on, otherwise 60
     let ext: [String]?    // receiver's optional extensions; ignored if absent
 
     var kind: String { device ?? "device" }

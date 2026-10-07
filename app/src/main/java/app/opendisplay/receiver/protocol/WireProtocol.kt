@@ -43,6 +43,8 @@ object WireMessage {
     const val CLIP = "clip"
     /** Mirror vs extended desktop request (Android → Mac). See [WireCaps.MODE]. */
     const val MODE = "mode"
+    /** PNG clipboard image, both directions. See [WireCaps.CLIP_IMAGE]. */
+    const val CLIP_IMAGE = "clipimg"
 }
 
 /**
@@ -58,6 +60,11 @@ object WireCaps {
     const val CLICK = "click"
     const val CLIP = "clip"
     const val MODE = "mode"
+    /** Mac crops its capture to the pinch-zoomed rect (`viewport` messages). */
+    const val VIEWPORT = "viewport"
+    /** Images travel with the clipboard; needs [CLIP] too. */
+    const val CLIP_IMAGE = "clipimg"
 
-    val ALL = listOf(HOVER, KEY, CLICK, CLIP, MODE)
+    /** What this tablet can send or receive; sent as `hello.ext`. */
+    val ALL = listOf(HOVER, KEY, CLICK, CLIP, MODE, CLIP_IMAGE)
 }

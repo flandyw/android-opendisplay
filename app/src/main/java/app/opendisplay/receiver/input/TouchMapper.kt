@@ -182,6 +182,11 @@ class TouchMapper(
 
     fun viewport(): Viewport = Viewport(scale, panX, panY)
 
+    /** Tell a freshly connected Mac about the zoom we are still showing. */
+    fun resendViewport() {
+        if (isZoomed) publishViewport()
+    }
+
     fun onTouch(event: MotionEvent, viewW: Int, viewH: Int): Boolean {
         if (viewW <= 0 || viewH <= 0) return false
         viewWidth = viewW

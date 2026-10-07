@@ -12,7 +12,7 @@ Framing and base messages are unchanged (see WIRE.md in the Mac repo).
 | key       | type     | meaning                                              |
 |-----------|----------|------------------------------------------------------|
 | `refresh` | number   | panel refresh rate in Hz — pick a matching capture rate |
-| `ext`     | [string] | capabilities the tablet can send: `hover key click clip mode` |
+| `ext`     | [string] | capabilities the tablet can send: `hover key click clip mode clipimg` |
 
 ## Modifier bitmask (`mods`)
 
@@ -27,7 +27,9 @@ so sticky sidebar modifiers work with taps and pen strokes.
 | `key`   | `{"type":"key","code":<kVK>,"down":bool,"mods":int,"chars":"a","repeat":bool}` | `code` is a macOS virtual key (ANSI). `chars` is only set for plain typing (no Cmd/Ctrl). Used for the hardware keyboard, sidebar buttons and gestures |
 | `click` | `{"type":"click","button":"right","x":..,"y":..,"mods":int}` | two-finger tap and mouse secondary button |
 | `clip`  | `{"type":"clip","text":"…"}` both directions | plain text, ≤ 256 K chars. The tablet only sends while its app is in the foreground (Android restriction) |
-| `mode`  | `{"type":"mode","mode":"mirror"\|"extend"}` | the sidebar toggle; the Mac should apply it to the virtual display |
+| `mode`  | `{"type":"mode","mode":"mirror"\|"extend"}` | the sidebar toggle; the Mac should apply it to the virtual display. The Mac also states the session's actual mode in `welcome.mode`, which the tablet shows on its toggle |
+| `viewport` | `{"type":"viewport","x":..,"y":..,"w":..,"h":..,"z":..}` | the zoomed-in part of the desktop, normalized; the Mac crops capture to it. Sent whenever the zoom changes, and again after each `welcome` while still zoomed |
+| `clipimg` | `{"type":"clipimg","png":"<base64>"}` both directions | clipboard image, PNG ≤ 600 000 bytes (larger images are scaled down first). Needs `clip` on the Mac |
 
 Pen `touch` messages also carry `barrel2: true` while the secondary stylus
 button is held (squeeze / double-tap mappings on supported pens).

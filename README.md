@@ -54,13 +54,13 @@ on those networks.
 
 **Input & audio**
 
-- Touch click / drag / two-finger scroll; pinch-zoom
+- Touch click / drag / two-finger scroll; pinch-zoom (the Mac crops its capture to the zoomed area, so zoom shows real detail)
 - Stylus: pen always acts as a pointer (pressure, tilt, barrel button sent as optional `touch` fields; palm rejection while the pen is down). Pressure/tilt need Mac-app support; older Macs treat it as a plain click/drag.
 - Sidecar-style gestures: 3-finger swipe = undo/redo, pinch = copy/paste; 4-finger swipe = Mission Control / Spaces; two-finger tap = right-click
 - Sidebar (tab on either screen edge — tap or drag it open; it tucks itself away after a few idle seconds and scrolls on short screens): sticky ⌘ ⌥ ⌃ ⇧ (tap = next click only, long-press = lock; a dot on the tab shows one is armed), Esc, undo/redo, copy/paste, app switcher, Mission Control, Spotlight, Dock toggle, on-screen keyboard, pen-only mode (fingers scroll), mirror/extend, one-tap zoom reset, stats HUD, dim screen (panel to minimum brightness, stream keeps running), and a switch to dock the sidebar left or right
 - On-screen keyboard types into the Mac (autocorrect off, so the Mac sees what you typed); sticky modifiers combine with it (⌘ then `c` = copy). Needs Mac-app `key` support
 - Hardware keyboard keys include the numeric keypad
-- Hardware keyboard, mouse/trackpad (hover, right-click, wheel) and plain-text clipboard sync
+- Hardware keyboard, mouse/trackpad (hover, right-click, wheel) and clipboard sync (text, and images up to ~600 KB; turn on "Sync clipboard" in the Mac app)
 - Auto-reconnect when a reverse (tablet → Mac) session drops; the last frame stays up with a “Reconnecting…” pill for a few seconds, so rotation, mirror/extend switches and Wi‑Fi blips don't flash the connection screen. Matches the display's highest refresh rate
 - Features marked above beyond basic touch need Mac-app support — see [WIRE-EXTENSIONS.md](WIRE-EXTENSIONS.md); without it they stay inactive
 - Mac cursor overlay
@@ -143,6 +143,8 @@ toolchain, so no local Gradle install is required.
 
 **If classic dial fails** (`nc <device-ip> 9000` times out): reverse connect
 kicks in — Mac listens on **9011**, this app dials the Mac. Keep the app open.
+On the Mac turn on **Let Android devices connect to this Mac** (it is off by
+default, and the Mac asks you to approve each new device).
 With USB debugging connected, Mac may use `adb reverse tcp:9011` so the app
 can dial `127.0.0.1:9011` when pure Wi‑Fi peer traffic is blocked.
 
@@ -152,9 +154,10 @@ USB debugging does **not** install a Mac default route, so **Wi‑Fi keeps worki
 
 1. Enable **Developer options → USB debugging** (AOSP-style ROMs: **Settings → System → Developer options**).
 2. Cable device ↔ Mac; accept the debugging prompt if shown.
-3. Mac OpenDisplay → **Android USB** / adb path (needs
+3. Mac OpenDisplay → turn on **Detect Android devices over USB** (needs
    [platform-tools](https://developer.android.com/tools/releases/platform-tools)
-   `adb` on PATH or the usual SDK location).
+   `adb` on PATH or the usual SDK location); the device shows up under Devices
+   and connects when you plug it in.
 4. **Do not enable USB tethering** unless adb is unavailable.
 
 Manual equivalent:

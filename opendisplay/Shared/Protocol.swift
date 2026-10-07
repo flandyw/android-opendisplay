@@ -40,6 +40,8 @@ enum WireMessage {
     static let click = "click"                      // receiver -> Mac: discrete click (cap `click`)
     static let clip = "clip"                        // both ways: plain-text clipboard (cap `clip`)
     static let mode = "mode"                        // receiver -> Mac: switch mirror/extend (cap `mode`)
+    static let viewport = "viewport"                // receiver -> Mac: zoomed-in rect to crop capture to (cap `viewport`)
+    static let clipImage = "clipimg"                // both ways: PNG clipboard image (cap `clipimg`)
 }
 
 /// Optional features the Mac lists in `welcome.caps`. They are gated by caps,
@@ -51,6 +53,8 @@ enum WireCap {
     static let click = "click"
     static let clip = "clip"
     static let mode = "mode"     // receiver may ask to switch mirror/extend
+    static let viewport = "viewport"   // Mac crops capture to the receiver's zoomed rect
+    static let clipImage = "clipimg"   // images travel with the clipboard (needs `clip` on too)
 }
 
 /// What a `power` message asks the receiver to do (PROTOCOL.md 6.6). The
