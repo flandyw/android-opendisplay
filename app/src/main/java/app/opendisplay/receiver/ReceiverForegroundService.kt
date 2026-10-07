@@ -87,9 +87,6 @@ class ReceiverForegroundService : Service() {
         }
 
         fun stop(context: Context) {
-            context.startService(
-                Intent(context, ReceiverForegroundService::class.java).setAction(ACTION_STOP),
-            )
             context.stopService(Intent(context, ReceiverForegroundService::class.java))
         }
     }

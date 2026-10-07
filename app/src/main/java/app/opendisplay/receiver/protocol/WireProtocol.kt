@@ -24,6 +24,8 @@ object WireMessage {
     const val UPDATE_REQUIRED = "updateRequired"
     const val SLEEPING = "sleeping"
     const val CLOSING = "closing"
+    /** Mac → Android: user disconnected; pause reverse auto-connect until a new Connect. */
+    const val DISCONNECT = "disconnect"
     const val HELLO = "hello"
     const val TOUCH = "touch"
     const val SCROLL = "scroll"

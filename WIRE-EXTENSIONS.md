@@ -17,6 +17,18 @@ else is asked about. When the user picks *Always Allow* the Mac sends
 `{"type":"pair","token":"…"}` once; the tablet stores it under the Mac it dialed
 and presents it from then on.
 
+When the user chooses **Disconnect** (including Disconnect All or stopping
+capture from the system UI), the Mac sends `{"type":"disconnect"}` before
+closing a reverse connection. Android pauses both retry dials and discovery
+auto-connect for that Mac until the user taps Connect again or reopens the
+Android app. A transport failure or Mac-side display rebuild still reconnects
+automatically. This message is additive; older receivers ignore it.
+
+Android **Quit** sends `{"type":"closing"}` before closing the connection,
+withdraws discovery, stops listening and streaming, stops its foreground
+service, and removes the activity from Recents. Home still keeps the session
+alive in the background.
+
 ## hello additions
 
 | key       | type     | meaning                                              |

@@ -50,6 +50,7 @@
     <string name="sidebar_undo">Undo</string>
     <string name="sidebar_mission_control">Mission Control</string>
     <string name="sidebar_spotlight">Spotlight</string>
+    <string name="sidebar_menu_bar">Focus the Mac menu bar</string>
     <string name="sidebar_dock">Show or hide the Dock</string>
     <string name="sidebar_keyboard">Keyboard</string>
     <string name="sidebar_pen_only">Pen only</string>
@@ -62,5 +63,6 @@
     <string name="sidebar_state_on">On</string>
     <string name="sidebar_state_off">Off</string>
     <string name="stream_reconnecting">Reconnecting…</string>
-    <string name="stream_hint">Tap the tab for shortcuts. Three fingers: swipe to undo or redo.</string>
+    <string name="stream_hint">Tap the tab for shortcuts. Hold the hide sidebar button for more controls. Three fingers: swipe to undo or redo.</string>
+    <string name="quit_app">Quit</string>
 </resources>

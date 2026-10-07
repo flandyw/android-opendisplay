@@ -983,7 +983,19 @@ final class SenderController: ObservableObject {
     func disconnect(_ session: DeviceSession) {
         switch session.target {
         case .usb, .android: usbDisabled.insert(session.id)
-        case .reverse: break   // the receiver redials; nothing here to opt out of
+        case .reverse:
+            // The receiver pauses its redials when it receives the goodbye.
+            // Also opt out any discovered path for this same device so our
+            // WiFi/USB auto-connect cannot immediately take it back.
+            if let result = wifiService(for: session) {
+                wifiRemembered.remove(ConnectionTarget.wifi(result).sessionID)
+                if let name = serviceName(of: result), everOnCable.contains(name) {
+                    cableOptOut.insert(name)
+                }
+            }
+            for device in adbDevices where activeSession(coveringAndroid: device) === session {
+                usbDisabled.insert(ConnectionTarget.android(serial: device.serial).sessionID)
+            }
         case .wifi:
             wifiRemembered.remove(session.id)
             if let name = session.wifiServiceName, everOnCable.contains(name) {
@@ -994,7 +1006,7 @@ final class SenderController: ObservableObject {
         // out too, or auto-connect resurrects the device moments later.
         if session.onUSB, let udid = session.usbUDID { usbDisabled.insert("usb:\(udid)") }
         if let name = session.wifiServiceName { wifiRemembered.remove("wifi:\(name)") }
-        end(session)
+        end(session, userInitiated: true)
     }
 
     func disconnectAll() {
@@ -1010,8 +1022,8 @@ final class SenderController: ObservableObject {
         connect(to: target, userInitiated: true)
     }
 
-    private func end(_ session: DeviceSession) {
-        session.sender.stop()
+    private func end(_ session: DeviceSession, userInitiated: Bool = false) {
+        session.sender.stop(announcingDisconnect: userInitiated && session.target.isReverse)
         sessions.removeAll { $0.id == session.id }
     }
 
@@ -1565,4 +1577,3 @@ struct DisplaySizePicker: View {
         return outcome.caption + (sameAsDefault ? " (same as Default)" : "")
     }
 }
-

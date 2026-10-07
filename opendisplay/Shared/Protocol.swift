@@ -34,6 +34,7 @@ enum WireMessage {
     static let updateRequired = "updateRequired"    // Mac -> phone: peer is below the Mac's floor
     static let sleeping = "sleeping"                // phone -> Mac: device locked, reconnect on wake
     static let closing = "closing"                  // phone -> Mac: app quit, end the session for good
+    static let disconnect = "disconnect"            // Mac -> Android: user disconnected, pause reverse reconnect
     static let streamConfig = "streamConfig"        // Mac -> receiver: selected video operating point
     static let power = "power"                      // Mac -> receiver: shut down (PROTOCOL.md 6.6)
     static let key = "key"                          // receiver -> Mac: keyboard event (cap `key`)

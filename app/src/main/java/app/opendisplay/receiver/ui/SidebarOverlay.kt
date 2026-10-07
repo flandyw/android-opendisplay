@@ -13,17 +13,18 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,11 +35,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -46,19 +48,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -75,10 +77,9 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerType
 
 private val PanelColor = Color(0xE61C1C1E)
-private val PanelBorder = Color(0x26FFFFFF)
 private val ActiveColor = Color(0xFF0A84FF)
 private val LockedColor = Color(0xFF30B0C7)
-private val IdleColor = Color(0x33FFFFFF)
+private val IdleColor = Color.Transparent
 private val GlyphColor = Color(0xFFFFFFFF)
 
 /** A drag this far toward the screen centre pulls the tab open. */
@@ -88,13 +89,12 @@ private const val TAB_DRAG_OPEN_DP = 10
  * Screen width the open sidebar occupies. The picture is scaled down by this
  * much so the panel sits beside it instead of covering it.
  */
-val SidebarWidth = 72.dp
+val SidebarWidth = 64.dp
 
 /**
- * Sidecar-style sidebar, kept short: sticky Cmd/Opt/Ctrl/Shift, Esc, Undo, the
- * keyboard and pen-only mode, and a "more" menu for the rest. While open it
- * takes its own strip of the screen (see [SidebarWidth]); collapsed it is a
- * thin tab. It can dock to either edge.
+ * A full-height Sidecar-style rail: display shortcuts at the top, sticky
+ * modifiers in the middle, and undo/keyboard/hide at the bottom. Long-press
+ * hide to open the remaining controls. Collapsed, it is a thin edge tab.
  *
  * Modifiers and shortcuts need the Mac to support `key` ([keyEnabled]); the
  * mirror toggle needs `mode` ([modeEnabled]).
@@ -120,10 +120,14 @@ fun SidebarOverlay(
     onRightSide: (Boolean) -> Unit,
     onExpanded: (Boolean) -> Unit,
     onHaptic: () -> Unit,
+    onQuit: () -> Unit,
 ) {
     val scroll = rememberScrollState()
     var moreOpen by remember { mutableStateOf(false) }
     val haptic = onHaptic
+    LaunchedEffect(ui.expanded) {
+        if (!ui.expanded) moreOpen = false
+    }
 
     val right = ui.rightSide
     val motion = MaterialTheme.motionScheme
@@ -133,7 +137,9 @@ fun SidebarOverlay(
     val towardEdge = if (right) 1 else -1
 
     BoxWithConstraints(Modifier.fillMaxSize().ignorePalms(palm)) {
-        val panelMaxHeight = maxHeight - 24.dp
+        // Keep every 48dp touch target reachable on short landscape screens.
+        // On tablets the two flexible gaps reproduce the reference grouping.
+        val railHeight = maxHeight.coerceAtLeast(560.dp)
         if (ui.hud && hud.isNotEmpty()) {
             Text(
                 text = hud,
@@ -170,61 +176,88 @@ fun SidebarOverlay(
         ) {
             Column(
                 modifier = Modifier
-                    .padding(horizontal = 8.dp)
-                    .heightIn(max = panelMaxHeight)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(PanelColor)
-                    .border(1.dp, PanelBorder, RoundedCornerShape(18.dp))
+                    .width(SidebarWidth)
+                    .fillMaxHeight()
+                    .background(Color.Black)
                     .consumeAllPointers()
-                    .verticalScroll(scroll)
-                    .padding(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                    .verticalScroll(scroll),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (keyEnabled) {
-                    ModButton("⌘", Mods.CMD, R.string.sidebar_mod_cmd, ui, onTapMod, onLockMod, haptic)
-                    ModButton("⌥", Mods.OPT, R.string.sidebar_mod_opt, ui, onTapMod, onLockMod, haptic)
-                    ModButton("⌃", Mods.CTRL, R.string.sidebar_mod_ctrl, ui, onTapMod, onLockMod, haptic)
-                    ModButton("⇧", Mods.SHIFT, R.string.sidebar_mod_shift, ui, onTapMod, onLockMod, haptic)
-                    Divider()
-                    TextKey("esc", R.string.sidebar_escape, haptic) { onShortcut(MacKeys.ESCAPE, 0) }
-                    TextKey("⌘Z", R.string.sidebar_undo, haptic) { onShortcut(MacKeys.Z, Mods.CMD) }
-                    IconKey(Glyph.KEYBOARD, R.string.sidebar_keyboard, haptic, active = ui.keyboard) {
-                        onKeyboard(!ui.keyboard)
+                Column(
+                    modifier = Modifier
+                        .width(SidebarWidth)
+                        .height(railHeight)
+                        .padding(top = 16.dp, bottom = 64.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (keyEnabled) {
+                        IconKey(R.drawable.ic_sidebar_square_arrow_up, R.string.sidebar_menu_bar, haptic) {
+                            onShortcut(MacKeys.F2, Mods.CTRL)
+                        }
+                        IconKey(R.drawable.ic_sidebar_square_arrow_down, R.string.sidebar_dock, haptic) {
+                            onShortcut(MacKeys.D, Mods.CMD or Mods.OPT)
+                        }
                     }
-                }
-                TextKey("Pen", R.string.sidebar_pen_only, haptic, active = ui.penOnly, textSp = 12, toggle = true) {
-                    onPenOnly(!ui.penOnly)
-                }
-                if (ui.zoomed) {
-                    TextKey("1×", R.string.sidebar_zoom_reset, haptic, textSp = 15) { onZoomReset() }
-                }
-                Divider()
-                Box {
-                    IconKey(Glyph.MORE, R.string.sidebar_more, haptic, active = moreOpen) { moreOpen = !moreOpen }
-                    DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
-                        if (keyEnabled) {
-                            MoreItem(R.string.sidebar_mission_control) {
-                                onShortcut(MacKeys.ARROW_UP, Mods.CTRL)
+                    Spacer(Modifier.weight(1f))
+                    if (keyEnabled) {
+                        ModButton(R.drawable.ic_sidebar_command, Mods.CMD, R.string.sidebar_mod_cmd, ui, onTapMod, onLockMod, haptic)
+                        ModButton(R.drawable.ic_sidebar_option, Mods.OPT, R.string.sidebar_mod_opt, ui, onTapMod, onLockMod, haptic)
+                        ModButton(R.drawable.ic_sidebar_chevron_up, Mods.CTRL, R.string.sidebar_mod_ctrl, ui, onTapMod, onLockMod, haptic)
+                        ModButton(R.drawable.ic_sidebar_arrow_big_up, Mods.SHIFT, R.string.sidebar_mod_shift, ui, onTapMod, onLockMod, haptic)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (keyEnabled) {
+                        IconKey(R.drawable.ic_sidebar_undo_2, R.string.sidebar_undo, haptic) {
+                            onShortcut(MacKeys.Z, Mods.CMD)
+                        }
+                        IconKey(R.drawable.ic_sidebar_keyboard, R.string.sidebar_keyboard, haptic, active = ui.keyboard, toggle = true) {
+                            onKeyboard(!ui.keyboard)
+                        }
+                    }
+                    Box {
+                        IconKey(
+                            if (right) R.drawable.ic_sidebar_panel_right_close else R.drawable.ic_sidebar_panel_left_close,
+                            R.string.sidebar_close,
+                            haptic,
+                            active = moreOpen,
+                            onLongPress = { moreOpen = true },
+                            longPressLabel = stringResource(R.string.sidebar_more),
+                        ) {
+                            moreOpen = false
+                            onExpanded(false)
+                        }
+                        DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
+                            if (keyEnabled) {
+                                MoreItem(R.string.sidebar_escape) { onShortcut(MacKeys.ESCAPE, 0) }
+                                MoreItem(R.string.sidebar_mission_control) {
+                                    onShortcut(MacKeys.ARROW_UP, Mods.CTRL)
+                                }
+                                MoreItem(R.string.sidebar_spotlight) { onShortcut(MacKeys.SPACE, Mods.CMD) }
                             }
-                            MoreItem(R.string.sidebar_spotlight) { onShortcut(MacKeys.SPACE, Mods.CMD) }
-                            MoreItem(R.string.sidebar_dock) { onShortcut(MacKeys.D, Mods.CMD or Mods.OPT) }
-                        }
-                        if (modeEnabled) {
-                            MoreItem(R.string.sidebar_mirror, checked = ui.mirror) { onMirror(!ui.mirror) }
-                        }
-                        MoreItem(R.string.sidebar_eraser, checked = ui.eraser) { onEraser(!ui.eraser) }
-                        MoreItem(R.string.sidebar_palm, checked = ui.palmReject) { onPalmReject(!ui.palmReject) }
-                        MoreItem(R.string.sidebar_hud, checked = ui.hud) { onHud(!ui.hud) }
-                        MoreItem(R.string.sidebar_dim, checked = ui.dim) { onDim(!ui.dim) }
-                        MoreItem(if (right) R.string.sidebar_move_left else R.string.sidebar_move_right) {
-                            onRightSide(!right)
+                            MoreItem(R.string.sidebar_pen_only, checked = ui.penOnly) { onPenOnly(!ui.penOnly) }
+                            if (ui.zoomed) {
+                                MoreItem(R.string.sidebar_zoom_reset) { onZoomReset() }
+                            }
+                            if (modeEnabled) {
+                                MoreItem(R.string.sidebar_mirror, checked = ui.mirror) { onMirror(!ui.mirror) }
+                            }
+                            MoreItem(R.string.sidebar_eraser, checked = ui.eraser) { onEraser(!ui.eraser) }
+                            MoreItem(R.string.sidebar_palm, checked = ui.palmReject) { onPalmReject(!ui.palmReject) }
+                            MoreItem(R.string.sidebar_hud, checked = ui.hud) { onHud(!ui.hud) }
+                            MoreItem(R.string.sidebar_dim, checked = ui.dim) { onDim(!ui.dim) }
+                            MoreItem(if (right) R.string.sidebar_move_left else R.string.sidebar_move_right) {
+                                moreOpen = false
+                                onRightSide(!right)
+                            }
                         }
                     }
-                }
-                IconKey(if (right) Glyph.CHEVRON_RIGHT else Glyph.CHEVRON_LEFT, R.string.sidebar_close, haptic) {
-                    moreOpen = false
-                    onExpanded(false)
+                    TextButton(
+                        onClick = onQuit,
+                        contentPadding = PaddingValues(0.dp),
+                        modifier = Modifier.width(48.dp).heightIn(min = 48.dp),
+                    ) {
+                        Text(stringResource(R.string.quit_app), color = GlyphColor, fontSize = 12.sp)
+                    }
                 }
             }
         }
@@ -294,13 +327,8 @@ private fun SidebarTab(right: Boolean, armed: Boolean, onOpen: () -> Unit) {
 }
 
 @Composable
-private fun Divider() {
-    Box(Modifier.width(26.dp).height(1.dp).background(Color(0x22FFFFFF)))
-}
-
-@Composable
 private fun ModButton(
-    label: String,
+    @androidx.annotation.DrawableRes icon: Int,
     bit: Int,
     @androidx.annotation.StringRes name: Int,
     ui: ControlsUi,
@@ -326,37 +354,19 @@ private fun ModButton(
         onClick = { onHaptic(); onTap(bit) },
         onLongPress = { onHaptic(); onLock(bit) },
     ) {
-        Text(label, color = GlyphColor, fontSize = 20.sp)
-    }
-}
-
-@Composable
-private fun TextKey(
-    label: String,
-    @androidx.annotation.StringRes name: Int,
-    onHaptic: () -> Unit,
-    active: Boolean = false,
-    textSp: Int = 13,
-    toggle: Boolean = false,
-    onClick: () -> Unit,
-) {
-    PanelButton(
-        description = stringResource(name),
-        state = if (toggle) stringResource(if (active) R.string.sidebar_state_on else R.string.sidebar_state_off) else null,
-        color = if (active) ActiveColor else IdleColor,
-        onClick = { onHaptic(); onClick() },
-    ) {
-        Text(label, color = GlyphColor, fontSize = textSp.sp, fontWeight = FontWeight.Medium)
+        Icon(painterResource(icon), contentDescription = null, tint = GlyphColor, modifier = Modifier.size(24.dp))
     }
 }
 
 @Composable
 private fun IconKey(
-    glyph: Glyph,
+    @androidx.annotation.DrawableRes icon: Int,
     @androidx.annotation.StringRes name: Int,
     onHaptic: () -> Unit,
     active: Boolean = false,
     toggle: Boolean = false,
+    onLongPress: (() -> Unit)? = null,
+    longPressLabel: String? = null,
     onClick: () -> Unit,
 ) {
     PanelButton(
@@ -364,12 +374,14 @@ private fun IconKey(
         state = if (toggle) stringResource(if (active) R.string.sidebar_state_on else R.string.sidebar_state_off) else null,
         color = if (active) ActiveColor else IdleColor,
         onClick = { onHaptic(); onClick() },
+        onLongPress = onLongPress?.let { action -> { onHaptic(); action() } },
+        longPressLabel = longPressLabel,
     ) {
-        Canvas(Modifier.size(22.dp)) { drawGlyph(glyph, GlyphColor) }
+        Icon(painterResource(icon), contentDescription = null, tint = GlyphColor, modifier = Modifier.size(22.dp))
     }
 }
 
-/** A 44dp key that springs in when pressed. */
+/** An unfilled 48dp touch target; armed and locked controls keep their state fill. */
 @Composable
 private fun PanelButton(
     description: String,
@@ -377,6 +389,7 @@ private fun PanelButton(
     state: String? = null,
     onClick: () -> Unit,
     onLongPress: (() -> Unit)? = null,
+    longPressLabel: String? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     var pressed by remember { mutableStateOf(false) }
@@ -393,7 +406,7 @@ private fun PanelButton(
     val fill by animateColorAsState(color, label = "key fill")
     Box(
         modifier = Modifier
-            .size(44.dp)
+            .size(48.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(12.dp))
             .background(fill)
@@ -401,6 +414,8 @@ private fun PanelButton(
                 role = Role.Button
                 contentDescription = description
                 if (state != null) stateDescription = state
+                onClick { click(); true }
+                if (hasLongPress) onLongClick(label = longPressLabel) { longPress?.invoke(); true }
             }
             .pointerInput(hasLongPress) {
                 detectTapGestures(
@@ -421,34 +436,7 @@ private fun PanelButton(
     )
 }
 
-private enum class Glyph { KEYBOARD, MORE, CHEVRON_LEFT, CHEVRON_RIGHT }
-
 private enum class Direction { LEFT, RIGHT }
-
-/** Hand-drawn so they render identically on every device (no font coverage gaps). */
-private fun DrawScope.drawGlyph(glyph: Glyph, color: Color) {
-    val w = size.width
-    val h = size.height
-    val stroke = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
-    when (glyph) {
-        Glyph.KEYBOARD -> {
-            drawRoundRect(
-                color, Offset(w * 0.04f, h * 0.2f), Size(w * 0.92f, h * 0.6f),
-                CornerRadius(3.dp.toPx()), stroke,
-            )
-            val dot = 1.1.dp.toPx()
-            for (row in listOf(0.37f, 0.52f)) for (x in listOf(0.22f, 0.4f, 0.6f, 0.78f)) {
-                drawCircle(color, dot, Offset(w * x, h * row))
-            }
-            drawLine(color, Offset(w * 0.3f, h * 0.67f), Offset(w * 0.7f, h * 0.67f), stroke.width, StrokeCap.Round)
-        }
-        Glyph.MORE -> {
-            for (x in listOf(0.2f, 0.5f, 0.8f)) drawCircle(color, 2.2.dp.toPx(), Offset(w * x, h * 0.5f))
-        }
-        Glyph.CHEVRON_LEFT -> drawChevron(Direction.LEFT, color)
-        Glyph.CHEVRON_RIGHT -> drawChevron(Direction.RIGHT, color)
-    }
-}
 
 private fun DrawScope.drawChevron(direction: Direction, color: Color) {
     val w = size.width

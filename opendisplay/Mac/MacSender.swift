@@ -1290,7 +1290,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         await status("\(mode == .extend ? "Extending to" : "Mirroring to") \(kind) (\(pixelsWide)×\(pixelsHigh))")
     }
 
-    func stop() {
+    func stop(announcingDisconnect: Bool = false) {
         stopped = true
         invalidateCapturePipeline(discardingLastFrame: true)
         stopCursorPositionEcho()
@@ -1299,8 +1299,20 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         cursorImageTimer = nil
         stream?.stopCapture { _ in }
         stream = nil
-        connection?.cancel()
+        let stoppedConnection = connection
         connection = nil
+        connectionReady = false
+        if announcingDisconnect, let stoppedConnection {
+            // Flush the explicit goodbye before closing TCP. A plain close is
+            // indistinguishable from a network failure to a reverse receiver.
+            queue.async {
+                self.sendJSONFrame("{\"type\":\"\(WireMessage.disconnect)\"}",
+                                   on: stoppedConnection, closeAfterSending: true)
+                self.queue.asyncAfter(deadline: .now() + 1) { stoppedConnection.cancel() }
+            }
+        } else {
+            stoppedConnection?.cancel()
+        }
         // Cursor-channel state is confined to `queue` (the 120Hz poll and the
         // UDP callbacks run there); tearing it down from the main actor races
         // them.
@@ -3320,12 +3332,18 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     /// Send on a connection whose `.ready` callback is currently being
     /// handled, before `connectionReady` opens the video path.
-    private func sendJSONFrame(_ json: String, on connection: NWConnection) {
+    private func sendJSONFrame(_ json: String, on connection: NWConnection,
+                               closeAfterSending: Bool = false) {
         let payload = Data(json.utf8)
         var header = UInt32(payload.count).bigEndian
         var frame = Data(bytes: &header, count: 4)
         frame.append(payload)
-        connection.send(content: frame, completion: .contentProcessed { _ in })
+        connection.send(content: frame,
+                        contentContext: closeAfterSending ? .finalMessage : .defaultMessage,
+                        isComplete: true,
+                        completion: .contentProcessed { _ in
+                            if closeAfterSending { connection.cancel() }
+                        })
     }
 
     /// VideoToolbox calls back on its own thread. Return to the sender queue so

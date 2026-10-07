@@ -105,6 +105,8 @@ import app.opendisplay.receiver.ui.UpdatesUi
 import app.opendisplay.receiver.ui.CursorOverlayView
 import app.opendisplay.receiver.video.H264Decoder
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import androidx.lifecycle.lifecycleScope
 
 class MainActivity : ComponentActivity() {
     private lateinit var decoder: H264Decoder
@@ -128,6 +130,8 @@ class MainActivity : ComponentActivity() {
         })
     }
     private var connectionMode: ConnectionMode = ConnectionMode.NETWORK
+    @Volatile private var quitting = false
+    private var receiverStopped = false
 
     /** Bound when the video view is inflated; cursor updates post to it. */
     @Volatile private var cursorView: CursorOverlayView? = null
@@ -332,11 +336,11 @@ class MainActivity : ComponentActivity() {
             this,
             onHost = { host, port, name ->
                 runOnUiThread {
-                    if (!::server.isInitialized) return@runOnUiThread
+                    if (quitting || !::server.isInitialized) return@runOnUiThread
                     nearbyMacs.value = nearbyMacs.value.withMac(NearbyMac(name, host, port))
                     // A Mac this device already streamed from connects by itself;
                     // a new one waits for a tap on its card.
-                    if (name in knownMacs()) dialMac(name, host, port)
+                    if (name in knownMacs()) dialMac(name, host, port, userInitiated = false)
                 }
             },
             onLost = { name -> runOnUiThread { nearbyMacs.value = nearbyMacs.value.withoutMac(name) } },
@@ -437,12 +441,14 @@ class MainActivity : ComponentActivity() {
                             },
                             onExpanded = controls::setExpanded,
                             onHaptic = ::haptic,
+                            onQuit = ::quit,
                         )
                     },
                     onConnectionMode = { mode -> setConnectionMode(mode) },
                     onConnectMac = ::connectToMac,
                     nearbyMacs = nearby,
                     onConnectNearby = ::connectToNearby,
+                    onQuit = ::quit,
                     lastMacAddress = prefs.getString(KEY_MAC_ADDRESS, "").orEmpty(),
                     createKeyboardView = { context ->
                         KeyboardCaptureView(context, textForwarder, ::forwardSoftKey)
@@ -472,7 +478,7 @@ class MainActivity : ComponentActivity() {
                     onSurfaceDestroyed = {
                         // Keep decoding into an off-screen surface so the Mac
                         // session survives home / recents (foreground service).
-                        attachHoldSurface()
+                        if (!quitting && !receiverStopped) attachHoldSurface()
                         videoSurface?.release()
                         videoSurface = null
                     },
@@ -491,6 +497,7 @@ class MainActivity : ComponentActivity() {
                     // Do NOT announce sleeping on ON_STOP — the foreground
                     // service keeps the TCP session for a real second-monitor.
                     Lifecycle.Event.ON_START -> {
+                        if (quitting) return@LifecycleEventObserver
                         clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                         clipboard?.addPrimaryClipChangedListener(clipListener)
                         // Always listen on :9000 and re-advertise when visible —
@@ -509,18 +516,7 @@ class MainActivity : ComponentActivity() {
                     }
                     Lifecycle.Event.ON_DESTROY -> {
                         if (!isChangingConfigurations) {
-                            server.announceClosing()
-                            nsd.unregister()
-                            if (::discoveryProbe.isInitialized) discoveryProbe.stop()
-                            macHostBrowser?.stop()
-                            macHostBrowser = null
-                            WifiNetworkHolder.stop()
-                            server.stop()
-                            streamLocks.setActive(false)
-                            ReceiverForegroundService.stop(this)
-                            releaseHoldSurface()
-                            videoSurface?.release()
-                            videoSurface = null
+                            stopReceiver()
                         }
                     }
                     else -> Unit
@@ -537,9 +533,49 @@ class MainActivity : ComponentActivity() {
 
     private fun connectToNearby(mac: NearbyMac) = dialMac(mac.name, mac.host, mac.port)
 
-    private fun dialMac(key: String, host: String, port: Int) {
+    private fun dialMac(key: String, host: String, port: Int, userInitiated: Boolean = true) {
+        if (quitting) return
         currentMacKey = key
-        server.connectOutbound(host, port)
+        server.connectOutbound(host, port, key, userInitiated)
+    }
+
+    /** Leave receiver duty explicitly; Home continues to keep the display alive. */
+    private fun quit() {
+        if (quitting) return
+        quitting = true
+        keyboardView?.hideKeyboard()
+        controls.endSession()
+        stopAdvertising()
+        lifecycleScope.launch {
+            try {
+                server.announceClosingAndStop()
+            } finally {
+                stopReceiver()
+                finishAndRemoveTask()
+            }
+        }
+    }
+
+    private fun stopAdvertising() {
+        nsd.unregister()
+        if (::discoveryProbe.isInitialized) discoveryProbe.stop()
+        macHostBrowser?.stop()
+    }
+
+    private fun stopReceiver() {
+        if (receiverStopped) return
+        receiverStopped = true
+        stopAdvertising()
+        macHostBrowser = null
+        server.stop()
+        WifiNetworkHolder.stop()
+        streamLocks.setActive(false)
+        stylusShortcuts.stop()
+        clipboard?.removePrimaryClipChangedListener(clipListener)
+        ReceiverForegroundService.stop(this)
+        releaseHoldSurface()
+        videoSurface?.release()
+        videoSurface = null
     }
 
     private fun knownMacs(): Set<String> = prefs.getStringSet(KEY_KNOWN_MACS, emptySet()).orEmpty()
@@ -570,7 +606,7 @@ class MainActivity : ComponentActivity() {
 
     /** Start (or keep) :9000 TCP + UDP probe + mDNS so Network and USB both work. */
     private fun ensureListeningAndAdvertising() {
-        if (!::server.isInitialized) return
+        if (quitting || receiverStopped || !::server.isInitialized) return
         // start() is a no-op if already running — never stop for mode switches.
         server.start(WireProtocol.DEFAULT_PORT)
         if (::discoveryProbe.isInitialized) {
@@ -801,6 +837,7 @@ private fun ReceiverScreen(
     lastMacAddress: String,
     nearbyMacs: List<NearbyMac>,
     onConnectNearby: (NearbyMac) -> Unit,
+    onQuit: () -> Unit,
     createKeyboardView: (Context) -> View,
     onBindViews: (TextureView?, CursorOverlayView?) -> Unit,
     onSurfaceReady: (Surface) -> Unit,
@@ -920,6 +957,7 @@ private fun ReceiverScreen(
             ConnectionScreen(
                 state, onConnectionMode, updates, onConnectMac, lastMacAddress,
                 nearbyMacs, onConnectNearby,
+                onQuit = onQuit,
             )
         }
     }

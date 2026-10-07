@@ -118,6 +118,7 @@ fun ConnectionScreen(
     /** Macs found on the network; each is one tap to connect. */
     nearbyMacs: List<NearbyMac> = emptyList(),
     onConnectNearby: (NearbyMac) -> Unit = {},
+    onQuit: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val mode = ConnectionMode.entries.firstOrNull { it.name == state.connectionMode }
@@ -155,6 +156,9 @@ fun ConnectionScreen(
                     }
                 },
                 actions = {
+                    if (onQuit != null) {
+                        TextButton(onClick = onQuit) { Text(stringResource(R.string.quit_app)) }
+                    }
                     FilledTonalIconButton(onClick = { sheet = ConnectionSheet.HELP }, modifier = Modifier.padding(end = 12.dp)) {
                         Symbol(R.drawable.ic_help, description = stringResource(R.string.connection_help))
                     }

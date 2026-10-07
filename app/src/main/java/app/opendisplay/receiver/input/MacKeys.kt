@@ -23,6 +23,7 @@ object Mods {
 object MacKeys {
     const val RETURN = 36
     const val DELETE = 51 // backspace
+    const val F2 = 120
     const val ESCAPE = 53
     const val Z = 6
     const val X = 7
