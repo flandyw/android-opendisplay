@@ -172,7 +172,17 @@ jobs:
             # Xcode leaves Sparkle.framework signed by Sparkle's own Team ID, which dyld
             # rejects in an app without one. Re-sign the whole bundle ad-hoc, inside out.
             codesign --force --deep --sign - --preserve-metadata=entitlements "$app"
+            # An ad-hoc signature's designated requirement is the binary's own hash, so every
+            # build looks like a different app to macOS and Screen Recording / Accessibility
+            # grants are dropped on each update. Re-sign just the outer bundle (nested code
+            # keeps its signature) with a requirement pinned to the bundle identifier, which
+            # stays the same across builds, so the existing grants keep matching.
+            bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")
+            codesign --force --sign - --preserve-metadata=entitlements \
+              -r="designated => identifier \"$bundle_id\"" "$app"
             codesign --verify --deep --strict "$app"
+            codesign -d -r- "$app" 2>&1 | grep -F "identifier \"$bundle_id\"" \
+              || { echo "::error::designated requirement not pinned to $bundle_id"; exit 1; }
             if codesign -dvv "$app" 2>&1 | grep -E 'flags=.*runtime|TeamIdentifier=[A-Z0-9]{10}'; then
               echo "::error::$app must not be hardened-runtime or carry a Team ID"; exit 1
             fi
