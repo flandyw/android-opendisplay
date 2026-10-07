@@ -16,6 +16,12 @@ data class ControlsUi(
     val expanded: Boolean = false,
     /** Panel brightness turned right down (battery / OLED) while the stream keeps running. */
     val dim: Boolean = false,
+    /** The on-screen keyboard is up and typing goes to the Mac. */
+    val keyboard: Boolean = false,
+    /** Viewport is pinch-zoomed, so the sidebar offers a one-tap reset. */
+    val zoomed: Boolean = false,
+    /** Sidebar docks to the right edge instead of the left. */
+    val rightSide: Boolean = false,
 )
 
 /**
@@ -23,8 +29,8 @@ data class ControlsUi(
  * hardware-key path. Modifiers tapped on the sidebar are one-shot (cleared
  * after the next click or key); a long-press locks them.
  */
-class InputControls {
-    private val state = MutableStateFlow(ControlsUi())
+class InputControls(rightSide: Boolean = false) {
+    private val state = MutableStateFlow(ControlsUi(rightSide = rightSide))
     val ui: StateFlow<ControlsUi> = state
 
     val activeMods: Int get() = state.value.let { it.oneShotMods or it.lockedMods }
@@ -53,4 +59,12 @@ class InputControls {
     fun setMirror(on: Boolean) = state.update { it.copy(mirror = on) }
     fun setDim(on: Boolean) = state.update { it.copy(dim = on) }
     fun setExpanded(on: Boolean) = state.update { it.copy(expanded = on) }
+    fun setKeyboard(on: Boolean) = state.update { it.copy(keyboard = on) }
+    fun setZoomed(on: Boolean) = state.update { it.copy(zoomed = on) }
+    fun setRightSide(on: Boolean) = state.update { it.copy(rightSide = on) }
+
+    /** The stream is gone for good: drop everything that only made sense while it ran. */
+    fun endSession() = state.update {
+        ControlsUi(penOnly = it.penOnly, hud = it.hud, rightSide = it.rightSide)
+    }
 }

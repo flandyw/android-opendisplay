@@ -47,6 +47,7 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="fullUser"
+            android:windowSoftInputMode="adjustNothing"
             android:theme="@style/Theme.OpenDisplay">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

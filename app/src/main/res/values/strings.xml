@@ -34,4 +34,34 @@
     <string name="updates_delete">Delete download</string>
     <string name="updates_download">Download update</string>
     <string name="updates_download_newer">Download newer update</string>
+    <!-- In-stream sidebar (accessibility labels) -->
+    <string name="sidebar_open">Show sidebar</string>
+    <string name="sidebar_close">Hide sidebar</string>
+    <string name="sidebar_mod_cmd">Command</string>
+    <string name="sidebar_mod_opt">Option</string>
+    <string name="sidebar_mod_ctrl">Control</string>
+    <string name="sidebar_mod_shift">Shift</string>
+    <string name="sidebar_mod_next_click">Applies to next click or key</string>
+    <string name="sidebar_mod_locked">Locked on</string>
+    <string name="sidebar_escape">Escape</string>
+    <string name="sidebar_undo">Undo</string>
+    <string name="sidebar_redo">Redo</string>
+    <string name="sidebar_copy">Copy</string>
+    <string name="sidebar_paste">Paste</string>
+    <string name="sidebar_app_switcher">Switch app</string>
+    <string name="sidebar_mission_control">Mission Control</string>
+    <string name="sidebar_spotlight">Spotlight</string>
+    <string name="sidebar_dock">Show or hide the Dock</string>
+    <string name="sidebar_keyboard">Keyboard</string>
+    <string name="sidebar_pen_only">Pen only</string>
+    <string name="sidebar_mirror">Mirror Mac display</string>
+    <string name="sidebar_zoom_reset">Reset zoom</string>
+    <string name="sidebar_hud">Stream statistics</string>
+    <string name="sidebar_dim">Dim screen</string>
+    <string name="sidebar_move_right">Move sidebar to the right edge</string>
+    <string name="sidebar_move_left">Move sidebar to the left edge</string>
+    <string name="sidebar_state_on">On</string>
+    <string name="sidebar_state_off">Off</string>
+    <string name="stream_reconnecting">Reconnecting…</string>
+    <string name="stream_hint">Tap the tab for shortcuts. Three fingers: swipe to undo or redo.</string>
 </resources>

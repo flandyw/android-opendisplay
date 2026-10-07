@@ -11,6 +11,7 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
+import android.view.View
 import android.view.TextureView
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -20,7 +21,33 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.Arrangement
+import androidx.core.view.ViewCompat
+import app.opendisplay.receiver.input.TextForwarder
+import app.opendisplay.receiver.ui.KeyboardCaptureView
+import app.opendisplay.receiver.ui.rememberStreamPresence
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -82,7 +109,13 @@ class MainActivity : ComponentActivity() {
     @Volatile private var holdSurfaceTexture: SurfaceTexture? = null
     @Volatile private var holdSurface: Surface? = null
     @Volatile private var latestViewport: TouchMapper.Viewport = TouchMapper.Viewport()
-    private val controls = InputControls()
+    private lateinit var controls: InputControls
+    private val prefs by lazy { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+
+    /** Invisible text target for the system keyboard (null until the stream view exists). */
+    @Volatile private var keyboardView: KeyboardCaptureView? = null
+    private val textForwarder = TextForwarder(type = ::typeText, backspace = ::typeBackspace)
+    private var imeVisible = false
 
     private var clipboard: ClipboardManager? = null
     /** Last text we put on / read from the clipboard — stops sync echo loops. */
@@ -102,6 +135,9 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         preferHighRefreshRate()
+
+        controls = InputControls(rightSide = prefs.getBoolean(KEY_SIDEBAR_RIGHT, false))
+        watchKeyboardVisibility()
 
         val app = application as OpenDisplayApp
         connectionMode = ConnectionMode.load(this)
@@ -190,6 +226,7 @@ class MainActivity : ComponentActivity() {
         )
         touchMapper = TouchMapper(this, server, controls, onHaptic = ::haptic) { viewport ->
             latestViewport = viewport
+            controls.setZoomed(viewport.scale > 1.01f)
             applyViewport(viewport)
         }
         nsd = NsdAdvertiser(this)
@@ -236,11 +273,32 @@ class MainActivity : ComponentActivity() {
                 val controlsUi by controls.ui.collectAsState()
                 val hud by server.hud.collectAsState()
                 val caps by server.caps.collectAsState()
-                LaunchedEffect(controlsUi.dim, state.streaming) {
-                    applyDim(controlsUi.dim && state.streaming)
+                // Keep the last frame up while the Mac rebuilds the display.
+                val showStream = rememberStreamPresence(state.streaming)
+                var hint by remember { mutableStateOf(!prefs.getBoolean(KEY_HINT_SEEN, false)) }
+                LaunchedEffect(controlsUi.dim, showStream) {
+                    applyDim(controlsUi.dim && showStream)
+                }
+                LaunchedEffect(showStream) {
+                    if (!showStream) {
+                        keyboardView?.hideKeyboard()
+                        if (controls.ui.value.zoomed) touchMapper.resetViewport()
+                        controls.endSession()
+                    }
+                }
+                val finishHint = {
+                    hint = false
+                    prefs.edit().putBoolean(KEY_HINT_SEEN, true).apply()
+                }
+                // Opening the sidebar is the hint's whole point.
+                LaunchedEffect(controlsUi.expanded) {
+                    if (controlsUi.expanded && hint) finishHint()
                 }
                 ReceiverScreen(
                     state = state,
+                    showStream = showStream,
+                    showHint = hint && showStream && !controlsUi.expanded,
+                    onHintDone = finishHint,
                     updates = updatesUi,
                     sidebar = {
                         SidebarOverlay(
@@ -260,11 +318,21 @@ class MainActivity : ComponentActivity() {
                             },
                             onHud = controls::setHud,
                             onDim = controls::setDim,
+                            onKeyboard = ::setKeyboard,
+                            onZoomReset = touchMapper::resetViewport,
+                            onRightSide = { right ->
+                                controls.setRightSide(right)
+                                prefs.edit().putBoolean(KEY_SIDEBAR_RIGHT, right).apply()
+                            },
                             onExpanded = controls::setExpanded,
                             onHaptic = ::haptic,
                         )
                     },
                     onConnectionMode = { mode -> setConnectionMode(mode) },
+                    createKeyboardView = { context ->
+                        KeyboardCaptureView(context, textForwarder, ::forwardSoftKey)
+                            .also { keyboardView = it }
+                    },
                     onBindViews = { texture, cursor ->
                         videoView = texture
                         cursorView = cursor
@@ -480,6 +548,14 @@ class MainActivity : ComponentActivity() {
         // Soft-keyboard / virtual devices stay with Android.
         val device = event.device ?: return false
         if (device.isVirtual || event.source and InputDevice.SOURCE_KEYBOARD == 0) return false
+        return sendMappedKey(event)
+    }
+
+    /** Enter / Backspace / arrows from the on-screen keyboard. */
+    private fun forwardSoftKey(event: KeyEvent): Boolean =
+        ::server.isInitialized && uiState.value.streaming && server.hasCap(WireCaps.KEY) && sendMappedKey(event)
+
+    private fun sendMappedKey(event: KeyEvent): Boolean {
         val code = MacKeys.fromAndroid(event.keyCode) ?: return false
         val down = event.action == KeyEvent.ACTION_DOWN
         if (!down && event.action != KeyEvent.ACTION_UP) return false
@@ -494,6 +570,51 @@ class MainActivity : ComponentActivity() {
         val sent = server.sendKey(code, down, mods, chars, repeat = down && event.repeatCount > 0)
         if (sent && !down) controls.consumeOneShot()
         return sent
+    }
+
+    /** One character from the on-screen keyboard, as a key press the Mac can type. */
+    private fun typeText(text: String) {
+        if (!::server.isInitialized || !server.hasCap(WireCaps.KEY)) return
+        var i = 0
+        while (i < text.length) {
+            val cp = text.codePointAt(i)
+            val glyph = String(Character.toChars(cp))
+            i += glyph.length
+            val key = if (glyph.length == 1) MacKeys.fromChar(glyph[0]) else null
+            val mods = controls.activeMods
+            val allMods = if (key?.shift == true) mods or Mods.SHIFT else mods
+            // Text outside US ANSI has no key of its own; the Mac types the
+            // unicode string carried alongside a placeholder key.
+            val chars = if (mods and (Mods.CMD or Mods.CTRL) == 0) glyph else null
+            val code = key?.code ?: 0
+            server.sendKey(code, true, allMods, chars)
+            server.sendKey(code, false, allMods)
+            controls.consumeOneShot()
+        }
+    }
+
+    private fun typeBackspace(count: Int) {
+        if (!::server.isInitialized) return
+        repeat(count) { server.sendShortcut(MacKeys.DELETE, 0) }
+    }
+
+    /** Show or hide the system keyboard; its text goes to the Mac. */
+    private fun setKeyboard(on: Boolean) {
+        controls.setKeyboard(on)
+        if (on) keyboardView?.showKeyboard() else keyboardView?.hideKeyboard()
+    }
+
+    /** Keep the sidebar button honest when the user dismisses the keyboard themselves. */
+    private fun watchKeyboardVisibility() {
+        ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { view, insets ->
+            val visible = insets.isVisible(WindowInsetsCompat.Type.ime())
+            if (visible != imeVisible) {
+                imeVisible = visible
+                controls.setKeyboard(visible)
+                if (!visible) textForwarder.finishComposing()
+            }
+            ViewCompat.onApplyWindowInsets(view, insets)
+        }
     }
 
     /** Drop the panel to minimum brightness (or hand control back to the system). */
@@ -516,13 +637,21 @@ class MainActivity : ComponentActivity() {
 }
 
 private const val DIM_BRIGHTNESS = 0.02f
+private const val PREFS = "opendisplay"
+private const val KEY_SIDEBAR_RIGHT = "sidebarRight"
+private const val KEY_HINT_SEEN = "streamHintSeen"
+private const val HINT_MS = 6_000L
 
 @Composable
 private fun ReceiverScreen(
     state: ReceiverUiState,
+    showStream: Boolean,
+    showHint: Boolean,
+    onHintDone: () -> Unit,
     updates: UpdatesUi,
     sidebar: @Composable () -> Unit,
     onConnectionMode: (ConnectionMode) -> Unit,
+    createKeyboardView: (Context) -> View,
     onBindViews: (TextureView?, CursorOverlayView?) -> Unit,
     onSurfaceReady: (Surface) -> Unit,
     onSurfaceDestroyed: () -> Unit,
@@ -532,8 +661,8 @@ private fun ReceiverScreen(
 ) {
     val activity = LocalContext.current as? MainActivity
     val streaming by rememberUpdatedState(state.streaming)
-    DisposableEffect(state.streaming) {
-        activity?.setImmersiveMode(state.streaming)
+    DisposableEffect(showStream) {
+        activity?.setImmersiveMode(showStream)
         onDispose { }
     }
 
@@ -549,7 +678,7 @@ private fun ReceiverScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .then(
-                    if (state.streaming) Modifier else Modifier.alpha(0f),
+                    if (showStream) Modifier else Modifier.alpha(0f),
                 ),
             factory = { context ->
                 val match = ViewGroup.LayoutParams(
@@ -596,6 +725,8 @@ private fun ReceiverScreen(
                     }
                     addView(texture)
                     addView(cursor)
+                    // 1px text target: the IME needs a focusable editor to type into.
+                    addView(createKeyboardView(context).apply { layoutParams = FrameLayout.LayoutParams(1, 1) })
                     onBindViews(texture, cursor)
 
                     setOnTouchListener { v, event ->
@@ -618,10 +749,58 @@ private fun ReceiverScreen(
             },
         )
 
-        if (state.streaming) {
+        if (showStream) {
             sidebar()
+            StreamNotices(reconnecting = !state.streaming, showHint = showHint, onHintDone = onHintDone)
         } else {
             ConnectionScreen(state, onConnectionMode, updates)
+        }
+    }
+}
+
+/** Transient pills over the picture: reconnect status and the one-time sidebar hint. */
+@Composable
+private fun StreamNotices(reconnecting: Boolean, showHint: Boolean, onHintDone: () -> Unit) {
+    Box(Modifier.fillMaxSize().statusBarsPadding(), contentAlignment = Alignment.TopCenter) {
+        AnimatedVisibility(
+            visible = reconnecting,
+            enter = fadeIn() + slideInVertically { -it },
+            exit = fadeOut() + slideOutVertically { -it },
+        ) {
+            Row(
+                modifier = Modifier
+                    .padding(top = 12.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color(0xE61C1C1E))
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .semantics { liveRegion = LiveRegionMode.Polite },
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                Text(stringResource(R.string.stream_reconnecting), color = Color.White, fontSize = 14.sp)
+            }
+        }
+        AnimatedVisibility(
+            visible = showHint && !reconnecting,
+            enter = fadeIn() + slideInVertically { it },
+            exit = fadeOut() + slideOutVertically { it },
+        ) {
+            LaunchedEffect(Unit) {
+                delay(HINT_MS)
+                onHintDone()
+            }
+            Text(
+                stringResource(R.string.stream_hint),
+                color = Color.White,
+                fontSize = 14.sp,
+                modifier = Modifier
+                    .padding(top = 12.dp, start = 24.dp, end = 24.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color(0xE61C1C1E))
+                    .padding(horizontal = 18.dp, vertical = 10.dp)
+                    .semantics { liveRegion = LiveRegionMode.Polite },
+            )
         }
     }
 }

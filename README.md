@@ -57,9 +57,11 @@ on those networks.
 - Touch click / drag / two-finger scroll; pinch-zoom
 - Stylus: pen always acts as a pointer (pressure, tilt, barrel button sent as optional `touch` fields; palm rejection while the pen is down). Pressure/tilt need Mac-app support; older Macs treat it as a plain click/drag.
 - Sidecar-style gestures: 3-finger swipe = undo/redo, pinch = copy/paste; 4-finger swipe = Mission Control / Spaces; two-finger tap = right-click
-- Sidebar (tab on the left edge, scrolls on short screens): sticky ⌘ ⌥ ⌃ ⇧ (tap = next click only, long-press = lock), Esc, undo/redo, copy/paste, app switcher, Mission Control, Spotlight, Dock toggle, pen-only mode (fingers scroll), mirror/extend, stats HUD, dim screen (panel to minimum brightness, stream keeps running)
+- Sidebar (tab on either screen edge — tap or drag it open; it tucks itself away after a few idle seconds and scrolls on short screens): sticky ⌘ ⌥ ⌃ ⇧ (tap = next click only, long-press = lock; a dot on the tab shows one is armed), Esc, undo/redo, copy/paste, app switcher, Mission Control, Spotlight, Dock toggle, on-screen keyboard, pen-only mode (fingers scroll), mirror/extend, one-tap zoom reset, stats HUD, dim screen (panel to minimum brightness, stream keeps running), and a switch to dock the sidebar left or right
+- On-screen keyboard types into the Mac (autocorrect off, so the Mac sees what you typed); sticky modifiers combine with it (⌘ then `c` = copy). Needs Mac-app `key` support
+- Hardware keyboard keys include the numeric keypad
 - Hardware keyboard, mouse/trackpad (hover, right-click, wheel) and plain-text clipboard sync
-- Auto-reconnect when a reverse (tablet → Mac) session drops; matches the display's highest refresh rate
+- Auto-reconnect when a reverse (tablet → Mac) session drops; the last frame stays up with a “Reconnecting…” pill for a few seconds, so rotation, mirror/extend switches and Wi‑Fi blips don't flash the connection screen. Matches the display's highest refresh rate
 - Features marked above beyond basic touch need Mac-app support — see [WIRE-EXTENSIONS.md](WIRE-EXTENSIONS.md); without it they stay inactive
 - Mac cursor overlay
 - System audio to device speakers when enabled on the Mac
@@ -300,6 +302,7 @@ app/src/main/java/app/opendisplay/receiver/
   audio/AudioPlayer.kt            # system audio to device speakers
   compat/DeviceReport.kt          # version / codec probe
   input/TouchMapper.kt
+  input/TextForwarder.kt          # on-screen keyboard edits → Mac keystrokes
   net/ReceiverServer.kt
   net/FrameCodec.kt
   net/NsdAdvertiser.kt

@@ -1,44 +1,92 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package app.opendisplay.receiver.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.opendisplay.receiver.R
 import app.opendisplay.receiver.input.ControlsUi
 import app.opendisplay.receiver.input.MacKeys
 import app.opendisplay.receiver.input.Mods
+import kotlinx.coroutines.delay
 
-private val PanelColor = Color(0xCC1C1C1E)
+private val PanelColor = Color(0xE61C1C1E)
+private val PanelBorder = Color(0x26FFFFFF)
 private val ActiveColor = Color(0xFF0A84FF)
 private val LockedColor = Color(0xFF30B0C7)
 private val IdleColor = Color(0x33FFFFFF)
+private val GlyphColor = Color(0xFFFFFFFF)
+
+/** The panel tucks itself away this long after the last touch. */
+private const val AUTO_HIDE_MS = 8_000L
+
+/** A drag this far toward the screen centre pulls the tab open. */
+private const val TAB_DRAG_OPEN_DP = 10
 
 /**
- * Sidecar-style sidebar: sticky Cmd/Opt/Ctrl/Shift, Esc, undo/redo, plus
- * pen-only, mirror/extend and HUD toggles. Collapsed to a thin tab by default
- * so it never covers the picture.
+ * Sidecar-style sidebar: sticky Cmd/Opt/Ctrl/Shift, Esc, undo/redo, the system
+ * keyboard, plus pen-only, mirror/extend and HUD toggles. Collapsed to a thin
+ * tab so it never covers the picture; it opens with a tap or a drag, closes on
+ * its own after a few idle seconds, and can dock to either edge.
  *
  * Modifiers and shortcuts need the Mac to support `key` ([keyEnabled]); the
  * mirror toggle needs `mode` ([modeEnabled]).
@@ -56,9 +104,32 @@ fun SidebarOverlay(
     onMirror: (Boolean) -> Unit,
     onHud: (Boolean) -> Unit,
     onDim: (Boolean) -> Unit,
+    onKeyboard: (Boolean) -> Unit,
+    onZoomReset: () -> Unit,
+    onRightSide: (Boolean) -> Unit,
     onExpanded: (Boolean) -> Unit,
     onHaptic: () -> Unit,
 ) {
+    val scroll = rememberScrollState()
+    // Every touch on the panel restarts the idle countdown.
+    var activity by remember { mutableIntStateOf(0) }
+    val touch = rememberUpdatedState({ activity++; onHaptic() })
+    val haptic = { touch.value() }
+
+    LaunchedEffect(ui.expanded, activity, scroll.value) {
+        if (ui.expanded) {
+            delay(AUTO_HIDE_MS)
+            onExpanded(false)
+        }
+    }
+
+    val right = ui.rightSide
+    val motion = MaterialTheme.motionScheme
+    val slideSpec = motion.defaultSpatialSpec<IntOffset>()
+    val fadeSpec = motion.defaultEffectsSpec<Float>()
+    val edge = if (right) Alignment.CenterEnd else Alignment.CenterStart
+    val towardEdge = if (right) 1 else -1
+
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val panelMaxHeight = maxHeight - 24.dp
         if (ui.hud && hud.isNotEmpty()) {
@@ -76,107 +147,344 @@ fun SidebarOverlay(
             )
         }
 
-        if (!ui.expanded) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .width(22.dp)
-                    .height(84.dp)
-                    .clip(RoundedCornerShape(topEnd = 12.dp, bottomEnd = 12.dp))
-                    .background(Color(0x66000000))
-                    .tapOnly { onExpanded(true) },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("›", color = Color(0xCCFFFFFF), fontSize = 18.sp)
-            }
-        } else {
+        AnimatedVisibility(
+            visible = !ui.expanded,
+            modifier = Modifier.align(edge),
+            enter = fadeIn(fadeSpec) + slideInHorizontally(slideSpec) { it * towardEdge },
+            exit = fadeOut(fadeSpec) + slideOutHorizontally(slideSpec) { it * towardEdge },
+        ) {
+            SidebarTab(
+                right = right,
+                armed = (ui.oneShotMods or ui.lockedMods) != 0,
+                onOpen = { onExpanded(true) },
+            )
+        }
+
+        AnimatedVisibility(
+            visible = ui.expanded,
+            modifier = Modifier.align(edge),
+            enter = fadeIn(fadeSpec) + slideInHorizontally(slideSpec) { it * towardEdge },
+            exit = fadeOut(fadeSpec) + slideOutHorizontally(slideSpec) { it * towardEdge },
+        ) {
             Column(
                 modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(start = 8.dp)
-                    .clip(RoundedCornerShape(16.dp))
+                    .padding(horizontal = 8.dp)
                     .heightIn(max = panelMaxHeight)
+                    .clip(RoundedCornerShape(18.dp))
                     .background(PanelColor)
+                    .border(1.dp, PanelBorder, RoundedCornerShape(18.dp))
                     .consumeAllPointers()
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(scroll)
                     .padding(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 if (keyEnabled) {
-                    ModButton("⌘", Mods.CMD, ui, onTapMod, onLockMod, onHaptic)
-                    ModButton("⌥", Mods.OPT, ui, onTapMod, onLockMod, onHaptic)
-                    ModButton("⌃", Mods.CTRL, ui, onTapMod, onLockMod, onHaptic)
-                    ModButton("⇧", Mods.SHIFT, ui, onTapMod, onLockMod, onHaptic)
-                    KeyButton("esc", false, 13) { onShortcut(MacKeys.ESCAPE, 0) }
-                    KeyButton("↶", false, 20) { onShortcut(MacKeys.Z, Mods.CMD) }
-                    KeyButton("↷", false, 20) { onShortcut(MacKeys.Z, Mods.CMD or Mods.SHIFT) }
-                    KeyButton("⌘C", false, 13) { onShortcut(MacKeys.C, Mods.CMD) }
-                    KeyButton("⌘V", false, 13) { onShortcut(MacKeys.V, Mods.CMD) }
-                    KeyButton("⇥", false, 20) { onShortcut(MacKeys.TAB, Mods.CMD) }
-                    KeyButton("▦", false, 18) { onShortcut(MacKeys.ARROW_UP, Mods.CTRL) }
-                    KeyButton("⌕", false, 20) { onShortcut(MacKeys.SPACE, Mods.CMD) }
-                    KeyButton("Dock", false, 11) { onShortcut(MacKeys.D, Mods.CMD or Mods.OPT) }
+                    ModButton("⌘", Mods.CMD, R.string.sidebar_mod_cmd, ui, onTapMod, onLockMod, haptic)
+                    ModButton("⌥", Mods.OPT, R.string.sidebar_mod_opt, ui, onTapMod, onLockMod, haptic)
+                    ModButton("⌃", Mods.CTRL, R.string.sidebar_mod_ctrl, ui, onTapMod, onLockMod, haptic)
+                    ModButton("⇧", Mods.SHIFT, R.string.sidebar_mod_shift, ui, onTapMod, onLockMod, haptic)
+                    Divider()
+                    TextKey("esc", R.string.sidebar_escape, haptic) { onShortcut(MacKeys.ESCAPE, 0) }
+                    TextKey("⌘Z", R.string.sidebar_undo, haptic) { onShortcut(MacKeys.Z, Mods.CMD) }
+                    TextKey("⇧⌘Z", R.string.sidebar_redo, haptic, textSp = 11) {
+                        onShortcut(MacKeys.Z, Mods.CMD or Mods.SHIFT)
+                    }
+                    TextKey("⌘C", R.string.sidebar_copy, haptic) { onShortcut(MacKeys.C, Mods.CMD) }
+                    TextKey("⌘V", R.string.sidebar_paste, haptic) { onShortcut(MacKeys.V, Mods.CMD) }
+                    Divider()
+                    TextKey("⌘⇥", R.string.sidebar_app_switcher, haptic) { onShortcut(MacKeys.TAB, Mods.CMD) }
+                    IconKey(Glyph.MISSION, R.string.sidebar_mission_control, haptic) {
+                        onShortcut(MacKeys.ARROW_UP, Mods.CTRL)
+                    }
+                    IconKey(Glyph.SPOTLIGHT, R.string.sidebar_spotlight, haptic) {
+                        onShortcut(MacKeys.SPACE, Mods.CMD)
+                    }
+                    TextKey("Dock", R.string.sidebar_dock, haptic, textSp = 11) {
+                        onShortcut(MacKeys.D, Mods.CMD or Mods.OPT)
+                    }
+                    Divider()
+                    IconKey(Glyph.KEYBOARD, R.string.sidebar_keyboard, haptic, active = ui.keyboard) {
+                        onKeyboard(!ui.keyboard)
+                    }
                 }
-                KeyButton("✎", ui.penOnly, 20) { onPenOnly(!ui.penOnly) }
+                TextKey("Pen", R.string.sidebar_pen_only, haptic, active = ui.penOnly, textSp = 12, toggle = true) {
+                    onPenOnly(!ui.penOnly)
+                }
                 if (modeEnabled) {
-                    KeyButton(if (ui.mirror) "⧉" else "▭▭", ui.mirror, 16) { onMirror(!ui.mirror) }
+                    IconKey(Glyph.MIRROR, R.string.sidebar_mirror, haptic, active = ui.mirror, toggle = true) {
+                        onMirror(!ui.mirror)
+                    }
                 }
-                KeyButton("HUD", ui.hud, 11) { onHud(!ui.hud) }
-                KeyButton("☾", ui.dim, 18) { onDim(!ui.dim) }
-                KeyButton("‹", false, 20) { onExpanded(false) }
+                if (ui.zoomed) {
+                    TextKey("1×", R.string.sidebar_zoom_reset, haptic, textSp = 15) { onZoomReset() }
+                }
+                TextKey("HUD", R.string.sidebar_hud, haptic, active = ui.hud, textSp = 11, toggle = true) {
+                    onHud(!ui.hud)
+                }
+                TextKey("Dim", R.string.sidebar_dim, haptic, active = ui.dim, textSp = 12, toggle = true) {
+                    onDim(!ui.dim)
+                }
+                Divider()
+                IconKey(
+                    if (right) Glyph.DOCK_LEFT else Glyph.DOCK_RIGHT,
+                    if (right) R.string.sidebar_move_left else R.string.sidebar_move_right,
+                    haptic,
+                ) { onRightSide(!right) }
+                IconKey(if (right) Glyph.CHEVRON_RIGHT else Glyph.CHEVRON_LEFT, R.string.sidebar_close, haptic) {
+                    onExpanded(false)
+                }
             }
         }
     }
+}
+
+/** The collapsed handle: tap or drag toward the centre to open the panel. */
+@Composable
+private fun SidebarTab(right: Boolean, armed: Boolean, onOpen: () -> Unit) {
+    val description = stringResource(R.string.sidebar_open)
+    val shape = if (right) {
+        RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp)
+    } else {
+        RoundedCornerShape(topEnd = 12.dp, bottomEnd = 12.dp)
+    }
+    Box(
+        modifier = Modifier
+            .width(24.dp)
+            .height(88.dp)
+            .clip(shape)
+            .background(Color(0x80000000))
+            .semantics {
+                role = Role.Button
+                contentDescription = description
+            }
+            .pointerInput(Unit) { detectTapGestures(onTap = { onOpen() }) }
+            .pointerInput(right) {
+                val threshold = TAB_DRAG_OPEN_DP.dp.toPx()
+                var travelled = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { travelled = 0f },
+                    onHorizontalDrag = { change, delta ->
+                        change.consume()
+                        travelled += if (right) -delta else delta
+                        if (travelled > threshold) {
+                            travelled = Float.NEGATIVE_INFINITY
+                            onOpen()
+                        }
+                    },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(14.dp)) {
+            drawChevron(if (right) Direction.LEFT else Direction.RIGHT, Color(0xCCFFFFFF))
+        }
+        if (armed) {
+            Box(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 8.dp)
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(ActiveColor),
+            )
+        }
+    }
+}
+
+@Composable
+private fun Divider() {
+    Box(Modifier.width(26.dp).height(1.dp).background(Color(0x22FFFFFF)))
 }
 
 @Composable
 private fun ModButton(
     label: String,
     bit: Int,
+    @androidx.annotation.StringRes name: Int,
     ui: ControlsUi,
     onTap: (Int) -> Unit,
     onLock: (Int) -> Unit,
     onHaptic: () -> Unit,
 ) {
-    val color = when {
-        ui.lockedMods and bit != 0 -> LockedColor
-        ui.oneShotMods and bit != 0 -> ActiveColor
-        else -> IdleColor
+    val locked = ui.lockedMods and bit != 0
+    val armed = ui.oneShotMods and bit != 0
+    val state = when {
+        locked -> stringResource(R.string.sidebar_mod_locked)
+        armed -> stringResource(R.string.sidebar_mod_next_click)
+        else -> stringResource(R.string.sidebar_state_off)
     }
-    Box(
-        modifier = Modifier
-            .size(44.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(color)
-            .pointerInput(bit) {
-                detectTapGestures(
-                    onTap = { onHaptic(); onTap(bit) },
-                    onLongPress = { onHaptic(); onLock(bit) },
-                )
-            },
-        contentAlignment = Alignment.Center,
+    PanelButton(
+        description = stringResource(name),
+        state = state,
+        color = when {
+            locked -> LockedColor
+            armed -> ActiveColor
+            else -> IdleColor
+        },
+        onClick = { onHaptic(); onTap(bit) },
+        onLongPress = { onHaptic(); onLock(bit) },
     ) {
-        Text(label, color = Color.White, fontSize = 20.sp)
+        Text(label, color = GlyphColor, fontSize = 20.sp)
     }
 }
 
 @Composable
-private fun KeyButton(label: String, active: Boolean, textSp: Int, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .size(44.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (active) ActiveColor else IdleColor)
-            .tapOnly(onClick),
-        contentAlignment = Alignment.Center,
+private fun TextKey(
+    label: String,
+    @androidx.annotation.StringRes name: Int,
+    onHaptic: () -> Unit,
+    active: Boolean = false,
+    textSp: Int = 13,
+    toggle: Boolean = false,
+    onClick: () -> Unit,
+) {
+    PanelButton(
+        description = stringResource(name),
+        state = if (toggle) stringResource(if (active) R.string.sidebar_state_on else R.string.sidebar_state_off) else null,
+        color = if (active) ActiveColor else IdleColor,
+        onClick = { onHaptic(); onClick() },
     ) {
-        Text(label, color = Color.White, fontSize = textSp.sp, fontWeight = FontWeight.Medium)
+        Text(label, color = GlyphColor, fontSize = textSp.sp, fontWeight = FontWeight.Medium)
     }
 }
 
-private fun Modifier.tapOnly(onTap: () -> Unit): Modifier =
-    pointerInput(Unit) { detectTapGestures(onTap = { onTap() }) }
+@Composable
+private fun IconKey(
+    glyph: Glyph,
+    @androidx.annotation.StringRes name: Int,
+    onHaptic: () -> Unit,
+    active: Boolean = false,
+    toggle: Boolean = false,
+    onClick: () -> Unit,
+) {
+    PanelButton(
+        description = stringResource(name),
+        state = if (toggle) stringResource(if (active) R.string.sidebar_state_on else R.string.sidebar_state_off) else null,
+        color = if (active) ActiveColor else IdleColor,
+        onClick = { onHaptic(); onClick() },
+    ) {
+        Canvas(Modifier.size(22.dp)) { drawGlyph(glyph, GlyphColor) }
+    }
+}
+
+/** A 44dp key that springs in when pressed. */
+@Composable
+private fun PanelButton(
+    description: String,
+    color: Color,
+    state: String? = null,
+    onClick: () -> Unit,
+    onLongPress: (() -> Unit)? = null,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    var pressed by remember { mutableStateOf(false) }
+    // Callbacks change on every recomposition; restarting the gesture detector
+    // mid-press would cancel the tap and leave the key looking pressed.
+    val click by rememberUpdatedState(onClick)
+    val longPress by rememberUpdatedState(onLongPress)
+    val hasLongPress = onLongPress != null
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.9f else 1f,
+        animationSpec = spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMedium),
+        label = "key press",
+    )
+    val fill by animateColorAsState(color, label = "key fill")
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clip(RoundedCornerShape(12.dp))
+            .background(fill)
+            .semantics {
+                role = Role.Button
+                contentDescription = description
+                if (state != null) stateDescription = state
+            }
+            .pointerInput(hasLongPress) {
+                detectTapGestures(
+                    onPress = {
+                        pressed = true
+                        try {
+                            tryAwaitRelease()
+                        } finally {
+                            pressed = false
+                        }
+                    },
+                    onTap = { click() },
+                    onLongPress = if (hasLongPress) ({ longPress?.invoke() }) else null,
+                )
+            },
+        contentAlignment = Alignment.Center,
+        content = content,
+    )
+}
+
+private enum class Glyph { MISSION, SPOTLIGHT, KEYBOARD, MIRROR, DOCK_LEFT, DOCK_RIGHT, CHEVRON_LEFT, CHEVRON_RIGHT }
+
+private enum class Direction { LEFT, RIGHT }
+
+/** Hand-drawn so they render identically on every device (no font coverage gaps). */
+private fun DrawScope.drawGlyph(glyph: Glyph, color: Color) {
+    val w = size.width
+    val h = size.height
+    val stroke = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
+    when (glyph) {
+        Glyph.MISSION -> {
+            // Four windows.
+            val corner = CornerRadius(2.dp.toPx())
+            for (x in listOf(0.08f, 0.54f)) for (y in listOf(0.18f, 0.58f)) {
+                drawRoundRect(
+                    color, Offset(w * x, h * y), Size(w * 0.38f, h * 0.26f),
+                    corner, stroke,
+                )
+            }
+        }
+        Glyph.SPOTLIGHT -> {
+            val r = w * 0.27f
+            drawCircle(color, r, Offset(w * 0.42f, h * 0.42f), style = stroke)
+            drawLine(color, Offset(w * 0.62f, h * 0.62f), Offset(w * 0.9f, h * 0.9f), stroke.width, StrokeCap.Round)
+        }
+        Glyph.KEYBOARD -> {
+            drawRoundRect(
+                color, Offset(w * 0.04f, h * 0.2f), Size(w * 0.92f, h * 0.6f),
+                CornerRadius(3.dp.toPx()), stroke,
+            )
+            val dot = 1.1.dp.toPx()
+            for (row in listOf(0.37f, 0.52f)) for (x in listOf(0.22f, 0.4f, 0.6f, 0.78f)) {
+                drawCircle(color, dot, Offset(w * x, h * row))
+            }
+            drawLine(color, Offset(w * 0.3f, h * 0.67f), Offset(w * 0.7f, h * 0.67f), stroke.width, StrokeCap.Round)
+        }
+        Glyph.MIRROR -> {
+            // Two overlapping screens showing the same picture.
+            val corner = CornerRadius(2.dp.toPx())
+            drawRoundRect(color, Offset(w * 0.04f, h * 0.14f), Size(w * 0.6f, h * 0.52f), corner, stroke)
+            drawRoundRect(color, Offset(w * 0.36f, h * 0.34f), Size(w * 0.6f, h * 0.52f), corner, stroke)
+        }
+        Glyph.DOCK_LEFT, Glyph.DOCK_RIGHT -> {
+            // A screen with a bar on the edge the panel will move to.
+            drawRoundRect(
+                color, Offset(w * 0.06f, h * 0.16f), Size(w * 0.88f, h * 0.68f),
+                CornerRadius(3.dp.toPx()), stroke,
+            )
+            val barX = if (glyph == Glyph.DOCK_LEFT) 0.2f else 0.8f
+            drawLine(color, Offset(w * barX, h * 0.32f), Offset(w * barX, h * 0.68f), 3.dp.toPx(), StrokeCap.Round)
+        }
+        Glyph.CHEVRON_LEFT -> drawChevron(Direction.LEFT, color)
+        Glyph.CHEVRON_RIGHT -> drawChevron(Direction.RIGHT, color)
+    }
+}
+
+private fun DrawScope.drawChevron(direction: Direction, color: Color) {
+    val w = size.width
+    val h = size.height
+    val tipX = if (direction == Direction.RIGHT) 0.72f else 0.28f
+    val tailX = if (direction == Direction.RIGHT) 0.3f else 0.7f
+    val width = 2.2.dp.toPx()
+    drawLine(color, Offset(w * tailX, h * 0.18f), Offset(w * tipX, h * 0.5f), width, StrokeCap.Round)
+    drawLine(color, Offset(w * tipX, h * 0.5f), Offset(w * tailX, h * 0.82f), width, StrokeCap.Round)
+}
 
 /** Keep touches on the panel's gaps from reaching the video view underneath. */
 private fun Modifier.consumeAllPointers(): Modifier = pointerInput(Unit) {
