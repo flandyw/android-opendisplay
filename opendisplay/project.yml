@@ -61,15 +61,15 @@ targets:
         NSBonjourServices: ["_opensidecar._tcp"]
         LSApplicationCategoryType: public.app-category.utilities
         # --- Sparkle auto-update (issue #52) ---
-        # The appcast feed is hosted on the landing-page site at the custom
-        # domain. The release workflow publishes appcast.xml so this URL
+        # The appcast feed is a GitHub Release asset. The release workflow
+        # publishes appcast.xml with every release, so this URL
         # resolves — see .github/workflows/release.yml.
-        SUFeedURL: https://opendisplay.app/appcast.xml
+        SUFeedURL: https://github.com/flandyw/android-opendisplay/releases/latest/download/appcast.xml
         # Public EdDSA key from Sparkle's `generate_keys`. The matching private
         # key lives only as the `SPARKLE_PRIVATE_KEY` GitHub Actions secret
         # (used to sign the appcast in CI) and is never committed. Sparkle
         # verifies update signatures against this public key before installing.
-        SUPublicEDKey: rYxlIePmwzi2bRo/qIsuY2TqTnQ34li2gQhJpGBiumw=
+        SUPublicEDKey: 2OzbTSGNzFm44tcIs7jEVw1h+4vc3CnyOgAMgutsJGo=
         # Check for updates automatically in the background on a schedule.
         SUEnableAutomaticChecks: true
     settings:
@@ -126,8 +126,8 @@ targets:
         LSApplicationCategoryType: public.app-category.utilities
         # Own Sparkle feed (separate DMG, same signing key); published by
         # release.yml next to the sender's appcast.
-        SUFeedURL: https://opendisplay.app/appcast-receiver.xml
-        SUPublicEDKey: rYxlIePmwzi2bRo/qIsuY2TqTnQ34li2gQhJpGBiumw=
+        SUFeedURL: https://github.com/flandyw/android-opendisplay/releases/latest/download/appcast-receiver.xml
+        SUPublicEDKey: 2OzbTSGNzFm44tcIs7jEVw1h+4vc3CnyOgAMgutsJGo=
         SUEnableAutomaticChecks: true
     settings:
       base:

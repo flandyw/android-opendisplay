@@ -105,30 +105,75 @@ jobs:
         run: brew install xcodegen
       - name: Generate project
         run: xcodegen generate
-      # No Apple Developer account: the app is ad-hoc signed, not notarized.
-      # Users open it via right-click > Open (or `xattr -cr OpenDisplay.app`).
-      - name: Build ad-hoc signed app
+      # No Apple Developer account: the apps are ad-hoc signed, not notarized.
+      # Users open them via right-click > Open (or `xattr -cr OpenDisplay.app`).
+      # Hardened runtime is off because library validation rejects the ad-hoc
+      # signed Sparkle.framework. Updates are authenticated by Sparkle's EdDSA
+      # signature instead (SPARKLE_PRIVATE_KEY <-> SUPublicEDKey in project.yml).
+      - name: Build ad-hoc signed apps and Sparkle appcasts
         env:
           APP_MARKETING_VERSION: ${{ needs.version.outputs.name }}
           APP_BUILD_NUMBER: ${{ needs.version.outputs.count }}
+          TAG: ${{ needs.version.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          xcodebuild -project OpenSidecar.xcodeproj -scheme OpenSidecarMac \
-            -configuration Release -derivedDataPath build/derived \
-            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
-            MARKETING_VERSION="$APP_MARKETING_VERSION" CURRENT_PROJECT_VERSION="$APP_BUILD_NUMBER" \
-            build
-          app="build/derived/Build/Products/Release/OpenDisplay.app"
-          codesign --verify --deep --strict "$app"
-          rm -rf build/dmg-src && mkdir -p build/dmg-src ../dist
-          cp -R "$app" build/dmg-src/
-          ln -s /Applications build/dmg-src/Applications
-          hdiutil create -volname OpenDisplay -srcfolder build/dmg-src -ov -format UDZO \
-            "../dist/OpenDisplay-$APP_MARKETING_VERSION.dmg"
+          : "${SPARKLE_PRIVATE_KEY:?Missing SPARKLE_PRIVATE_KEY secret}"
+          sparkle=$(gh release view -R sparkle-project/Sparkle --json tagName -q .tagName)
+          curl -fsSL -o /tmp/sparkle.tar.xz \
+            "https://github.com/sparkle-project/Sparkle/releases/download/$sparkle/Sparkle-$sparkle.tar.xz"
+          mkdir -p /tmp/sparkle && tar -xf /tmp/sparkle.tar.xz -C /tmp/sparkle
+          sign_update=$(find /tmp/sparkle -name sign_update -type f | head -1)
+          mkdir -p ../dist
+
+          build() { # build <scheme> <app name> <dmg prefix> <appcast file> <feed title> <min macOS>
+            scheme=$1 app_name=$2 prefix=$3 appcast=$4 title=$5
+            export MIN_MACOS=$6
+            xcodebuild -project OpenSidecar.xcodeproj -scheme "$scheme" \
+              -configuration Release -derivedDataPath "build/$scheme" \
+              CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= ENABLE_HARDENED_RUNTIME=NO \
+              MARKETING_VERSION="$APP_MARKETING_VERSION" CURRENT_PROJECT_VERSION="$APP_BUILD_NUMBER" \
+              build
+            app="build/$scheme/Build/Products/Release/$app_name.app"
+            codesign --verify --deep --strict "$app"
+            rm -rf "build/dmg-$scheme" && mkdir -p "build/dmg-$scheme"
+            cp -R "$app" "build/dmg-$scheme/"
+            ln -s /Applications "build/dmg-$scheme/Applications"
+            dmg="../dist/$prefix-$APP_MARKETING_VERSION.dmg"
+            hdiutil create -volname "$app_name" -srcfolder "build/dmg-$scheme" -ov -format UDZO "$dmg"
+            signature=$(printf '%s' "$SPARKLE_PRIVATE_KEY" | "$sign_update" --ed-key-file - "$dmg")
+            python3 - "$dmg" "$appcast" "$title" "$signature" <<'PY'
+          import os, sys, email.utils
+          dmg, appcast, title, signature = sys.argv[1:]
+          env = os.environ
+          url = f"https://github.com/{env['GITHUB_REPOSITORY']}/releases/download/{env['TAG']}/{os.path.basename(dmg)}"
+          open(f"../dist/{appcast}", "w").write(f"""<?xml version="1.0" standalone="yes"?>
+          <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+              <channel>
+                  <title>{title}</title>
+                  <item>
+                      <title>{env['APP_MARKETING_VERSION']}</title>
+                      <pubDate>{email.utils.formatdate(usegmt=True)}</pubDate>
+                      <sparkle:version>{env['APP_BUILD_NUMBER']}</sparkle:version>
+                      <sparkle:shortVersionString>{env['APP_MARKETING_VERSION']}</sparkle:shortVersionString>
+                      <sparkle:minimumSystemVersion>{env['MIN_MACOS']}</sparkle:minimumSystemVersion>
+                      <enclosure url="{url}" {signature} type="application/octet-stream"/>
+                  </item>
+              </channel>
+          </rss>
+          """)
+          PY
+          }
+
+          build OpenSidecarMac "OpenDisplay" OpenDisplay appcast.xml OpenDisplay 14.0
+          build OpenSidecarMacReceiver "OpenDisplay Receiver" OpenDisplayReceiver appcast-receiver.xml "OpenDisplay Receiver" 12.0
       - uses: actions/upload-artifact@v7
         with:
           name: macos
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/appcast*.xml
           if-no-files-found: error
 
   publish:
