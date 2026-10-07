@@ -33,6 +33,15 @@ class InputControlsTest {
     }
 
     @Test
+    fun dimToggles() {
+        val c = InputControls()
+        c.setDim(true)
+        assertEquals(true, c.ui.value.dim)
+        c.setDim(false)
+        assertEquals(false, c.ui.value.dim)
+    }
+
+    @Test
     fun macKeyMapCoversCommonKeys() {
         assertEquals(0, MacKeys.fromAndroid(android.view.KeyEvent.KEYCODE_A))
         assertEquals(6, MacKeys.fromAndroid(android.view.KeyEvent.KEYCODE_Z))

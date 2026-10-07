@@ -1,3 +1,8 @@
+> Status: the Mac app in `opendisplay/` now advertises and handles `hover`, `key`,
+> `click`, `clip` and `mode` (the sidebar mirror/extend toggle rebuilds the
+> session in the requested mode). Not yet compiled on a Mac from this repo's CI
+> sandbox — build and run `MacTests` before release.
+
 # macOS app work for the new Android features
 
 The Android app now sends several optional messages, but only when the Mac lists

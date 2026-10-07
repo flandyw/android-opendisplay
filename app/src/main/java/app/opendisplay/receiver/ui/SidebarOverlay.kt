@@ -3,6 +3,10 @@ package app.opendisplay.receiver.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -51,10 +55,12 @@ fun SidebarOverlay(
     onPenOnly: (Boolean) -> Unit,
     onMirror: (Boolean) -> Unit,
     onHud: (Boolean) -> Unit,
+    onDim: (Boolean) -> Unit,
     onExpanded: (Boolean) -> Unit,
     onHaptic: () -> Unit,
 ) {
-    Box(Modifier.fillMaxSize()) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val panelMaxHeight = maxHeight - 24.dp
         if (ui.hud && hud.isNotEmpty()) {
             Text(
                 text = hud,
@@ -89,8 +95,10 @@ fun SidebarOverlay(
                     .align(Alignment.CenterStart)
                     .padding(start = 8.dp)
                     .clip(RoundedCornerShape(16.dp))
+                    .heightIn(max = panelMaxHeight)
                     .background(PanelColor)
                     .consumeAllPointers()
+                    .verticalScroll(rememberScrollState())
                     .padding(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -103,12 +111,19 @@ fun SidebarOverlay(
                     KeyButton("esc", false, 13) { onShortcut(MacKeys.ESCAPE, 0) }
                     KeyButton("↶", false, 20) { onShortcut(MacKeys.Z, Mods.CMD) }
                     KeyButton("↷", false, 20) { onShortcut(MacKeys.Z, Mods.CMD or Mods.SHIFT) }
+                    KeyButton("⌘C", false, 13) { onShortcut(MacKeys.C, Mods.CMD) }
+                    KeyButton("⌘V", false, 13) { onShortcut(MacKeys.V, Mods.CMD) }
+                    KeyButton("⇥", false, 20) { onShortcut(MacKeys.TAB, Mods.CMD) }
+                    KeyButton("▦", false, 18) { onShortcut(MacKeys.ARROW_UP, Mods.CTRL) }
+                    KeyButton("⌕", false, 20) { onShortcut(MacKeys.SPACE, Mods.CMD) }
+                    KeyButton("Dock", false, 11) { onShortcut(MacKeys.D, Mods.CMD or Mods.OPT) }
                 }
                 KeyButton("✎", ui.penOnly, 20) { onPenOnly(!ui.penOnly) }
                 if (modeEnabled) {
                     KeyButton(if (ui.mirror) "⧉" else "▭▭", ui.mirror, 16) { onMirror(!ui.mirror) }
                 }
                 KeyButton("HUD", ui.hud, 11) { onHud(!ui.hud) }
+                KeyButton("☾", ui.dim, 18) { onDim(!ui.dim) }
                 KeyButton("‹", false, 20) { onExpanded(false) }
             }
         }

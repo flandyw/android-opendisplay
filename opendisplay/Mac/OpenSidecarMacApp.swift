@@ -217,7 +217,11 @@ final class SenderController: ObservableObject {
     @Published var host = UserDefaults.standard.string(forKey: "host") ?? "127.0.0.1"
     @Published var port = UserDefaults.standard.string(forKey: "port") ?? "9000"
     // `-mode mirror` / `-mode extend` launch argument also works.
-    @Published var mode = CaptureMode(rawValue: UserDefaults.standard.string(forKey: "mode") ?? "") ?? .extend
+    // Changing it (picker or the receiver's sidebar toggle) rebuilds every
+    // running session in the new mode.
+    @Published var mode = CaptureMode(rawValue: UserDefaults.standard.string(forKey: "mode") ?? "") ?? .extend {
+        didSet { if mode != oldValue { restartAll() } }
+    }
     @Published var quality = StreamQuality(rawValue: UserDefaults.standard.string(forKey: "quality") ?? "") ?? .best {
         didSet { UserDefaults.standard.set(quality.rawValue, forKey: "quality") }
     }
@@ -702,6 +706,11 @@ final class SenderController: ObservableObject {
         sender.onTransportPath = { [weak session] wired in
             session?.wired = wired
         }
+        sender.onModeRequested = { [weak self] requested in
+            guard let self, self.mode != requested else { return }
+            Log.info("receiver asked for \(requested.rawValue) mode")
+            self.mode = requested
+        }
         sender.onPeerClosed = { [weak self, weak session] in
             // The receiver app quit — a deliberate goodbye, so no reconnect
             // waits around. Reopening the app is a fresh start handled by
@@ -981,7 +990,6 @@ struct ContentView: View {
                     Text("Mirror").tag(CaptureMode.mirror)
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: controller.mode) { controller.restartAll() }
 
                 VStack(alignment: .leading, spacing: 4) {
                     Picker("Quality", selection: $controller.quality) {

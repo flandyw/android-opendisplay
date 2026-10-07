@@ -24,6 +24,10 @@ object MacKeys {
     const val RETURN = 36
     const val ESCAPE = 53
     const val Z = 6
+    const val X = 7
+    const val D = 2
+    const val TAB = 48
+    const val SPACE = 49
     const val C = 8
     const val V = 9
     const val ARROW_LEFT = 123
@@ -41,8 +45,8 @@ object MacKeys {
         for (i in 0..9) put(KeyEvent.KEYCODE_0 + i, digits[i])
         put(KeyEvent.KEYCODE_ENTER, RETURN)
         put(KeyEvent.KEYCODE_NUMPAD_ENTER, RETURN)
-        put(KeyEvent.KEYCODE_TAB, 48)
-        put(KeyEvent.KEYCODE_SPACE, 49)
+        put(KeyEvent.KEYCODE_TAB, TAB)
+        put(KeyEvent.KEYCODE_SPACE, SPACE)
         put(KeyEvent.KEYCODE_GRAVE, 50)
         put(KeyEvent.KEYCODE_DEL, 51) // Android DEL is backspace
         put(KeyEvent.KEYCODE_ESCAPE, ESCAPE)

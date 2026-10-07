@@ -57,7 +57,7 @@ on those networks.
 - Touch click / drag / two-finger scroll; pinch-zoom
 - Stylus: pen always acts as a pointer (pressure, tilt, barrel button sent as optional `touch` fields; palm rejection while the pen is down). Pressure/tilt need Mac-app support; older Macs treat it as a plain click/drag.
 - Sidecar-style gestures: 3-finger swipe = undo/redo, pinch = copy/paste; 4-finger swipe = Mission Control / Spaces; two-finger tap = right-click
-- Sidebar (tab on the left edge): sticky ⌘ ⌥ ⌃ ⇧ (tap = next click only, long-press = lock), Esc, undo/redo, pen-only mode (fingers scroll), mirror/extend, stats HUD
+- Sidebar (tab on the left edge, scrolls on short screens): sticky ⌘ ⌥ ⌃ ⇧ (tap = next click only, long-press = lock), Esc, undo/redo, copy/paste, app switcher, Mission Control, Spotlight, Dock toggle, pen-only mode (fingers scroll), mirror/extend, stats HUD, dim screen (panel to minimum brightness, stream keeps running)
 - Hardware keyboard, mouse/trackpad (hover, right-click, wheel) and plain-text clipboard sync
 - Auto-reconnect when a reverse (tablet → Mac) session drops; matches the display's highest refresh rate
 - Features marked above beyond basic touch need Mac-app support — see [WIRE-EXTENSIONS.md](WIRE-EXTENSIONS.md); without it they stay inactive
@@ -67,6 +67,7 @@ on those networks.
 **Reliability**
 
 - Foreground service; stream survives Home / recents
+- Low-latency Wi‑Fi lock held while connected (no power-save jitter)
 
 ## What works
 

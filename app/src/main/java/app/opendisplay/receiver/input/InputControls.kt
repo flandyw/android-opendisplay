@@ -14,6 +14,8 @@ data class ControlsUi(
     val hud: Boolean = false,
     val mirror: Boolean = false,
     val expanded: Boolean = false,
+    /** Panel brightness turned right down (battery / OLED) while the stream keeps running. */
+    val dim: Boolean = false,
 )
 
 /**
@@ -49,5 +51,6 @@ class InputControls {
     fun setPenOnly(on: Boolean) = state.update { it.copy(penOnly = on) }
     fun setHud(on: Boolean) = state.update { it.copy(hud = on) }
     fun setMirror(on: Boolean) = state.update { it.copy(mirror = on) }
+    fun setDim(on: Boolean) = state.update { it.copy(dim = on) }
     fun setExpanded(on: Boolean) = state.update { it.copy(expanded = on) }
 }

@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -50,6 +51,7 @@ import app.opendisplay.receiver.net.NsdAdvertiser
 import app.opendisplay.receiver.net.PanelInfo
 import app.opendisplay.receiver.net.ReceiverServer
 import app.opendisplay.receiver.net.ReceiverUiState
+import app.opendisplay.receiver.net.StreamLocks
 import app.opendisplay.receiver.net.WifiNetworkHolder
 import app.opendisplay.receiver.protocol.WireCaps
 import app.opendisplay.receiver.protocol.WireProtocol
@@ -65,6 +67,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var decoder: H264Decoder
     private lateinit var server: ReceiverServer
     private lateinit var nsd: NsdAdvertiser
+    private lateinit var streamLocks: StreamLocks
     private lateinit var discoveryProbe: DiscoveryProbe
     private var macHostBrowser: MacHostBrowser? = null
     private lateinit var touchMapper: TouchMapper
@@ -120,6 +123,7 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+        streamLocks = StreamLocks(this)
         decoder = H264Decoder(
             onNeedKeyframe = {
                 if (::server.isInitialized) server.requestKeyframe()
@@ -133,6 +137,7 @@ class MainActivity : ComponentActivity() {
             context = this,
             installId = app.installId,
             onState = { next ->
+                streamLocks.setActive(next.connected)
                 uiState.value = next.copy(
                     deviceSummary = next.deviceSummary.ifEmpty { deviceInfo.summaryLine() },
                     connectionMode = connectionMode.name,
@@ -231,6 +236,9 @@ class MainActivity : ComponentActivity() {
                 val controlsUi by controls.ui.collectAsState()
                 val hud by server.hud.collectAsState()
                 val caps by server.caps.collectAsState()
+                LaunchedEffect(controlsUi.dim, state.streaming) {
+                    applyDim(controlsUi.dim && state.streaming)
+                }
                 ReceiverScreen(
                     state = state,
                     updates = updatesUi,
@@ -251,6 +259,7 @@ class MainActivity : ComponentActivity() {
                                 if (server.sendDisplayMode(mirror)) controls.setMirror(mirror)
                             },
                             onHud = controls::setHud,
+                            onDim = controls::setDim,
                             onExpanded = controls::setExpanded,
                             onHaptic = ::haptic,
                         )
@@ -318,6 +327,7 @@ class MainActivity : ComponentActivity() {
                             macHostBrowser = null
                             WifiNetworkHolder.stop()
                             server.stop()
+                            streamLocks.setActive(false)
                             ReceiverForegroundService.stop(this)
                             releaseHoldSurface()
                             videoSurface?.release()
@@ -486,6 +496,13 @@ class MainActivity : ComponentActivity() {
         return sent
     }
 
+    /** Drop the panel to minimum brightness (or hand control back to the system). */
+    fun applyDim(on: Boolean) {
+        window.attributes = window.attributes.apply {
+            screenBrightness = if (on) DIM_BRIGHTNESS else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        }
+    }
+
     fun setImmersiveMode(enabled: Boolean) {
         val controller = WindowCompat.getInsetsController(window, window.decorView)
         if (enabled) {
@@ -497,6 +514,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+private const val DIM_BRIGHTNESS = 0.02f
 
 @Composable
 private fun ReceiverScreen(

@@ -39,6 +39,7 @@ enum WireMessage {
     static let key = "key"                          // receiver -> Mac: keyboard event (cap `key`)
     static let click = "click"                      // receiver -> Mac: discrete click (cap `click`)
     static let clip = "clip"                        // both ways: plain-text clipboard (cap `clip`)
+    static let mode = "mode"                        // receiver -> Mac: switch mirror/extend (cap `mode`)
 }
 
 /// Optional features the Mac lists in `welcome.caps`. They are gated by caps,
@@ -49,6 +50,7 @@ enum WireCap {
     static let key = "key"
     static let click = "click"
     static let clip = "clip"
+    static let mode = "mode"     // receiver may ask to switch mirror/extend
 }
 
 /// What a `power` message asks the receiver to do (PROTOCOL.md 6.6). The

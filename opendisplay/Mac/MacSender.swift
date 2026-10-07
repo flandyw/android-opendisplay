@@ -49,6 +49,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     // Fired when the receiver announces the app is quitting: deliberate,
     // so the controller ends the session without arming a reconnect.
     @MainActor var onPeerClosed: (() -> Void)?
+    // Fired when the receiver's sidebar asks to switch between mirror and
+    // extend (cap `mode`). The controller rebuilds the session in that mode.
+    @MainActor var onModeRequested: ((CaptureMode) -> Void)?
     // Fired once a TCP connection is live, with whether it runs over a
     // wired path (Thunderbolt Bridge / Ethernet) rather than WiFi — the UI
     // labels the row so the user can see the cable is actually in use.
@@ -2416,6 +2419,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                                          chars: obj["chars"] as? String,
                                          isRepeat: obj["repeat"] as? Bool ?? false)
             }
+        case WireMessage.mode:
+            if let raw = obj["mode"] as? String, let requested = CaptureMode(rawValue: raw) {
+                Task { @MainActor in self.onModeRequested?(requested) }
+            }
         case WireMessage.clip:
             if let text = obj["text"] as? String { clipboardSync?.receive(text) }
         case "scroll":
@@ -3039,7 +3046,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func sendWelcome() {
-        var caps = [WireCap.hover, WireCap.key, WireCap.click]
+        var caps = [WireCap.hover, WireCap.key, WireCap.click, WireCap.mode]
         if ClipboardSync.isEnabled { caps.append(WireCap.clip) }
         let capsJSON = caps.map { "\"\($0)\"" }.joined(separator: ",")
         sendJSONFrame("{\"type\":\"\(WireMessage.welcome)\",\"pv\":\(WireProtocol.version),\"min\":\(WireProtocol.minSupportedPeer),\"caps\":[\(capsJSON)]}")
