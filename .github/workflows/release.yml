@@ -136,7 +136,16 @@ jobs:
               MARKETING_VERSION="$APP_MARKETING_VERSION" CURRENT_PROJECT_VERSION="$APP_BUILD_NUMBER" \
               build
             app="build/$scheme/Build/Products/Release/$app_name.app"
+            # Xcode leaves Sparkle.framework signed by Sparkle's own Team ID, which dyld
+            # rejects in an app without one. Re-sign the whole bundle ad-hoc, inside out.
+            codesign --force --deep --sign - --preserve-metadata=entitlements "$app"
             codesign --verify --deep --strict "$app"
+            if codesign -dvv "$app" 2>&1 | grep -E 'flags=.*runtime|TeamIdentifier=[A-Z0-9]{10}'; then
+              echo "::error::$app must not be hardened-runtime or carry a Team ID"; exit 1
+            fi
+            if codesign -dvv "$app/Contents/Frameworks/Sparkle.framework" 2>&1 | grep -E 'TeamIdentifier=[A-Z0-9]{10}'; then
+              echo "::error::Sparkle.framework still carries a Team ID"; exit 1
+            fi
             rm -rf "build/dmg-$scheme" && mkdir -p "build/dmg-$scheme"
             cp -R "$app" "build/dmg-$scheme/"
             ln -s /Applications "build/dmg-$scheme/Applications"
