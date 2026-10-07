@@ -78,6 +78,8 @@ import app.opendisplay.receiver.clip.ImageClip
 import app.opendisplay.receiver.compat.DeviceReport
 import app.opendisplay.receiver.input.InputControls
 import app.opendisplay.receiver.input.MacKeys
+import app.opendisplay.receiver.input.PalmGuard
+import app.opendisplay.receiver.input.StylusShortcutManager
 import app.opendisplay.receiver.input.Mods
 import app.opendisplay.receiver.input.TouchMapper
 import app.opendisplay.receiver.net.DiscoveryProbe
@@ -136,6 +138,9 @@ class MainActivity : ComponentActivity() {
     @Volatile private var holdSurface: Surface? = null
     @Volatile private var latestViewport: TouchMapper.Viewport = TouchMapper.Viewport()
     private lateinit var controls: InputControls
+    /** Shared by the video touch path and the sidebar so both ignore a resting hand. */
+    private val palmGuard = PalmGuard()
+    private lateinit var stylusShortcuts: StylusShortcutManager
     private val prefs by lazy { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
 
     /** Invisible text target for the system keyboard (null until the stream view exists). */
@@ -208,7 +213,11 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         preferHighRefreshRate()
 
-        controls = InputControls(rightSide = prefs.getBoolean(KEY_SIDEBAR_RIGHT, false))
+        controls = InputControls(
+            rightSide = prefs.getBoolean(KEY_SIDEBAR_RIGHT, false),
+            palmReject = prefs.getBoolean(KEY_PALM_REJECT, true),
+        )
+        palmGuard.enabled = controls.ui.value.palmReject
         watchKeyboardVisibility()
 
         val app = application as OpenDisplayApp
@@ -304,11 +313,12 @@ class MainActivity : ComponentActivity() {
             pairToken = { if (server.isReverseSession) pairTokens.tokenFor(currentMacKey) else null },
             onPairToken = { token -> pairTokens.save(currentMacKey, token) },
         )
-        touchMapper = TouchMapper(this, server, controls, onHaptic = ::haptic) { viewport ->
+        touchMapper = TouchMapper(this, server, controls, onHaptic = ::haptic, palm = palmGuard) { viewport ->
             latestViewport = viewport
             controls.setZoomed(viewport.scale > 1.01f)
             applyViewport(viewport)
         }
+        stylusShortcuts = StylusShortcutManager(this)
         nsd = NsdAdvertiser(this)
         discoveryProbe = DiscoveryProbe(
             context = this,
@@ -412,6 +422,13 @@ class MainActivity : ComponentActivity() {
                             },
                             onHud = controls::setHud,
                             onDim = controls::setDim,
+                            onEraser = controls::setEraser,
+                            onPalmReject = { on ->
+                                controls.setPalmReject(on)
+                                palmGuard.enabled = on
+                                prefs.edit().putBoolean(KEY_PALM_REJECT, on).apply()
+                            },
+                            palm = palmGuard,
                             onKeyboard = ::setKeyboard,
                             onZoomReset = touchMapper::resetViewport,
                             onRightSide = { right ->
@@ -480,8 +497,14 @@ class MainActivity : ComponentActivity() {
                         // USB mode still accepts network dials (adb forward and Wi‑Fi).
                         ensureListeningAndAdvertising()
                         macHostBrowser?.start()
+                        // Pencil double tap swaps pen and eraser.
+                        stylusShortcuts.start {
+                            controls.toggleEraser()
+                            haptic()
+                        }
                     }
                     Lifecycle.Event.ON_STOP -> {
+                        stylusShortcuts.stop()
                         clipboard?.removePrimaryClipChangedListener(clipListener)
                     }
                     Lifecycle.Event.ON_DESTROY -> {
@@ -759,6 +782,7 @@ private const val PREFS = "opendisplay"
 private const val KEY_SIDEBAR_RIGHT = "sidebarRight"
 private const val KEY_HINT_SEEN = "streamHintSeen"
 private const val KEY_MAC_ADDRESS = "macAddress"
+private const val KEY_PALM_REJECT = "palmReject"
 private const val KEY_KNOWN_MACS = "knownMacs"
 private const val HINT_MS = 6_000L
 

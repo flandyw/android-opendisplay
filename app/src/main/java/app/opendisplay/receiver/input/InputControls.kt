@@ -22,6 +22,10 @@ data class ControlsUi(
     val zoomed: Boolean = false,
     /** Sidebar docks to the right edge instead of the left. */
     val rightSide: Boolean = false,
+    /** The stylus erases (its tip acts as the eraser) until toggled back. */
+    val eraser: Boolean = false,
+    /** Ignore a resting palm while the stylus is in use. */
+    val palmReject: Boolean = true,
 )
 
 /**
@@ -29,12 +33,13 @@ data class ControlsUi(
  * hardware-key path. Modifiers tapped on the sidebar are one-shot (cleared
  * after the next click or key); a long-press locks them.
  */
-class InputControls(rightSide: Boolean = false) {
-    private val state = MutableStateFlow(ControlsUi(rightSide = rightSide))
+class InputControls(rightSide: Boolean = false, palmReject: Boolean = true) {
+    private val state = MutableStateFlow(ControlsUi(rightSide = rightSide, palmReject = palmReject))
     val ui: StateFlow<ControlsUi> = state
 
     val activeMods: Int get() = state.value.let { it.oneShotMods or it.lockedMods }
     val penOnly: Boolean get() = state.value.penOnly
+    val eraser: Boolean get() = state.value.eraser
 
     fun tapMod(bit: Int) = state.update {
         when {
@@ -62,9 +67,12 @@ class InputControls(rightSide: Boolean = false) {
     fun setKeyboard(on: Boolean) = state.update { it.copy(keyboard = on) }
     fun setZoomed(on: Boolean) = state.update { it.copy(zoomed = on) }
     fun setRightSide(on: Boolean) = state.update { it.copy(rightSide = on) }
+    fun setEraser(on: Boolean) = state.update { it.copy(eraser = on) }
+    fun toggleEraser() = state.update { it.copy(eraser = !it.eraser) }
+    fun setPalmReject(on: Boolean) = state.update { it.copy(palmReject = on) }
 
     /** The stream is gone for good: drop everything that only made sense while it ran. */
     fun endSession() = state.update {
-        ControlsUi(penOnly = it.penOnly, hud = it.hud, rightSide = it.rightSide)
+        ControlsUi(penOnly = it.penOnly, hud = it.hud, rightSide = it.rightSide, palmReject = it.palmReject)
     }
 }

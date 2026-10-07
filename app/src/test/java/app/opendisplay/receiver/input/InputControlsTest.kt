@@ -103,4 +103,17 @@ class InputControlsTest {
         assertEquals(false, ui.dim)
         assertEquals(0, c.activeMods)
     }
+
+    @Test
+    fun eraserToggleAndPalmRejectSurviveASessionAppropriately() {
+        val c = InputControls()
+        assertEquals(true, c.ui.value.palmReject)
+        c.toggleEraser()
+        assertEquals(true, c.eraser)
+        c.setPalmReject(false)
+        c.endSession()
+        // The eraser is per session; the palm preference is the user's.
+        assertEquals(false, c.eraser)
+        assertEquals(false, c.ui.value.palmReject)
+    }
 }

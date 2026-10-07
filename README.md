@@ -55,7 +55,8 @@ on those networks.
 **Input & audio**
 
 - Touch click / drag / two-finger scroll; pinch-zoom (the Mac crops its capture to the zoomed area, so zoom shows real detail)
-- Stylus: pen always acts as a pointer (pressure, tilt, barrel button sent as optional `touch` fields; palm rejection while the pen is down). Pressure/tilt need Mac-app support; older Macs treat it as a plain click/drag.
+- Palm rejection: a finger that lands while the stylus is touching or hovering (and for half a second after) is ignored, as is any contact too wide to be a fingertip or one that spreads into a hand as it rests. Leaving the pen's hover range releases it at once. The sidebar ignores palms too. Turn it off under More → Ignore palm touches
+- Stylus: pen always acts as a pointer (pressure, tilt, barrel buttons sent as optional `touch` fields), the pen's eraser end erases, and **More → Eraser** (or a OnePlus/OPPO Pencil double tap) swaps the pen and the eraser. Pressure/tilt need Mac-app support; older Macs treat it as a plain click/drag.
 - Sidecar-style gestures: 3-finger swipe = undo/redo, pinch = copy/paste; 4-finger swipe = Mission Control / Spaces; two-finger tap = right-click
 - Sidebar (tab on either screen edge — tap or drag it open). Open, it takes its own strip of the screen and the picture scales down beside it instead of being covered. It keeps to what matters: sticky ⌘ ⌥ ⌃ ⇧ (tap = next click only, long-press = lock; a dot on the tab shows one is armed), Esc, Undo, the on-screen keyboard, pen-only mode (fingers scroll), a one-tap zoom reset while zoomed, and a **More** menu with Mission Control, Spotlight, Dock, mirror/extend, stats, dim screen and which edge the sidebar docks to. Redo, copy and paste are gestures (3-finger swipe/pinch)
 - On-screen keyboard types into the Mac (autocorrect off, so the Mac sees what you typed); sticky modifiers combine with it (⌘ then `c` = copy). Needs Mac-app `key` support

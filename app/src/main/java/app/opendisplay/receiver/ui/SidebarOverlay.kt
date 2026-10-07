@@ -69,6 +69,10 @@ import app.opendisplay.receiver.R
 import app.opendisplay.receiver.input.ControlsUi
 import app.opendisplay.receiver.input.MacKeys
 import app.opendisplay.receiver.input.Mods
+import app.opendisplay.receiver.input.PalmGuard
+import app.opendisplay.receiver.input.RejectedTouches
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerType
 
 private val PanelColor = Color(0xE61C1C1E)
 private val PanelBorder = Color(0x26FFFFFF)
@@ -108,6 +112,9 @@ fun SidebarOverlay(
     onMirror: (Boolean) -> Unit,
     onHud: (Boolean) -> Unit,
     onDim: (Boolean) -> Unit,
+    onEraser: (Boolean) -> Unit,
+    onPalmReject: (Boolean) -> Unit,
+    palm: PalmGuard,
     onKeyboard: (Boolean) -> Unit,
     onZoomReset: () -> Unit,
     onRightSide: (Boolean) -> Unit,
@@ -125,7 +132,7 @@ fun SidebarOverlay(
     val edge = if (right) Alignment.CenterEnd else Alignment.CenterStart
     val towardEdge = if (right) 1 else -1
 
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    BoxWithConstraints(Modifier.fillMaxSize().ignorePalms(palm)) {
         val panelMaxHeight = maxHeight - 24.dp
         if (ui.hud && hud.isNotEmpty()) {
             Text(
@@ -206,6 +213,8 @@ fun SidebarOverlay(
                         if (modeEnabled) {
                             MoreItem(R.string.sidebar_mirror, checked = ui.mirror) { onMirror(!ui.mirror) }
                         }
+                        MoreItem(R.string.sidebar_eraser, checked = ui.eraser) { onEraser(!ui.eraser) }
+                        MoreItem(R.string.sidebar_palm, checked = ui.palmReject) { onPalmReject(!ui.palmReject) }
                         MoreItem(R.string.sidebar_hud, checked = ui.hud) { onHud(!ui.hud) }
                         MoreItem(R.string.sidebar_dim, checked = ui.dim) { onDim(!ui.dim) }
                         MoreItem(if (right) R.string.sidebar_move_left else R.string.sidebar_move_right) {
@@ -449,6 +458,29 @@ private fun DrawScope.drawChevron(direction: Direction, color: Color) {
     val width = 2.2.dp.toPx()
     drawLine(color, Offset(w * tailX, h * 0.18f), Offset(w * tipX, h * 0.5f), width, StrokeCap.Round)
     drawLine(color, Offset(w * tipX, h * 0.5f), Offset(w * tailX, h * 0.82f), width, StrokeCap.Round)
+}
+
+/**
+ * Consume finger contacts that are a resting palm (the stylus is at work)
+ * before the sidebar's buttons see them. Pen and mouse always get through.
+ */
+private fun Modifier.ignorePalms(palm: PalmGuard): Modifier = pointerInput(palm) {
+    val touches = RejectedTouches(palm)
+    awaitPointerEventScope {
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            event.changes.forEach { change ->
+                val consume = touches.shouldConsume(
+                    id = change.id.value,
+                    isTouch = change.type == PointerType.Touch,
+                    isPen = change.type == PointerType.Stylus || change.type == PointerType.Eraser,
+                    pressed = change.pressed,
+                    now = change.uptimeMillis,
+                )
+                if (consume) change.consume()
+            }
+        }
+    }
 }
 
 /** Keep touches on the panel's gaps from reaching the video view underneath. */

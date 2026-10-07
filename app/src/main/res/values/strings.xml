@@ -37,6 +37,8 @@
     <!-- In-stream sidebar (accessibility labels) -->
     <string name="sidebar_open">Show sidebar</string>
     <string name="sidebar_more">More</string>
+    <string name="sidebar_eraser">Eraser</string>
+    <string name="sidebar_palm">Ignore palm touches</string>
     <string name="sidebar_close">Hide sidebar</string>
     <string name="sidebar_mod_cmd">Command</string>
     <string name="sidebar_mod_opt">Option</string>

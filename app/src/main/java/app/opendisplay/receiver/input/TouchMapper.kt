@@ -38,10 +38,12 @@ class TouchMapper(
     private val server: ReceiverServer,
     private val controls: InputControls = InputControls(),
     private val onHaptic: () -> Unit = {},
+    /** Shared with the sidebar so both ignore a resting hand. */
+    private val palm: PalmGuard = PalmGuard(),
     private val onViewportChanged: (Viewport) -> Unit = {},
 ) {
     private val density = context.resources.displayMetrics.density
-    private val palmMajorPx = PALM_MAJOR_DP * density
+    private val xdpi = context.resources.displayMetrics.xdpi.coerceAtLeast(1f)
     private val swipePx = SWIPE_DP * density
     private val tapSlopPx = TAP_SLOP_DP * density
 
@@ -191,6 +193,9 @@ class TouchMapper(
         if (viewW <= 0 || viewH <= 0) return false
         viewWidth = viewW
         viewHeight = viewH
+
+        // Any pen contact keeps palm rejection armed for the next half second.
+        if ((0 until event.pointerCount).any { isPen(event, it) }) palm.penActive(event.eventTime)
 
         if (handlePen(event)) return true
 
@@ -351,16 +356,37 @@ class TouchMapper(
         return true
     }
 
-    /** Drop a palm-sized contact (and the whole gesture it belongs to). */
+    /** Contact size in millimetres, so the palm threshold means the same on every panel. */
+    private fun contactMm(event: MotionEvent, index: Int) = event.getTouchMajor(index) / xdpi * 25.4f
+
+    /**
+     * Drop a palm (and the whole gesture it belongs to): a finger that lands
+     * while the pen is at work or hovering, a contact too wide to be a
+     * fingertip, or a small contact that spreads into a hand as it rests.
+     */
     private fun rejectPalm(event: MotionEvent): Boolean {
         val action = event.actionMasked
-        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
-            val idx = event.actionIndex
-            if (event.getToolType(idx) == MotionEvent.TOOL_TYPE_FINGER &&
-                event.getTouchMajor(idx) > palmMajorPx
-            ) {
-                palmGesture = true
-                abortFingerGesture(event)
+        if (!palmGesture) {
+            when (action) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                    val idx = event.actionIndex
+                    if (event.getToolType(idx) == MotionEvent.TOOL_TYPE_FINGER &&
+                        palm.isPalm(contactMm(event, idx), event.eventTime)
+                    ) {
+                        palmGesture = true
+                        abortFingerGesture(event)
+                    }
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val spread = (0 until event.pointerCount).any {
+                        event.getToolType(it) == MotionEvent.TOOL_TYPE_FINGER &&
+                            palm.isLargeContact(contactMm(event, it))
+                    }
+                    if (spread) {
+                        palmGesture = true
+                        abortFingerGesture(event)
+                    }
+                }
             }
         }
         if (!palmGesture) return false
@@ -410,6 +436,11 @@ class TouchMapper(
         if (viewW <= 0 || viewH <= 0) return false
         viewWidth = viewW
         viewHeight = viewH
+        if (isPen(event, 0)) {
+            // Hovering keeps palm rejection armed before the tip lands; leaving
+            // range releases it so finger gestures work again at once.
+            if (event.actionMasked == MotionEvent.ACTION_HOVER_EXIT) palm.penLeft() else palm.penActive(event.eventTime)
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_ENTER -> {
                 val (nx, ny) = screenToNormalized(event.x, event.y)
@@ -534,7 +565,8 @@ class TouchMapper(
             tilt = tilt,
             azimuth = azimuth,
             barrel = (event.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0,
-            eraser = event.getToolType(idx) == MotionEvent.TOOL_TYPE_ERASER,
+            // The pen's eraser end, or the eraser toggled on (sidebar / pencil double tap).
+            eraser = event.getToolType(idx) == MotionEvent.TOOL_TYPE_ERASER || controls.eraser,
             barrel2 = (event.buttonState and MotionEvent.BUTTON_STYLUS_SECONDARY) != 0,
         )
 
@@ -715,7 +747,6 @@ class TouchMapper(
         const val MIN_SCALE = 1f
         const val MAX_SCALE = 5f
         private const val VIEWPORT_MIN_INTERVAL_MS = 33L
-        private const val PALM_MAJOR_DP = 110f
         private const val SWIPE_DP = 72f
         private const val TAP_SLOP_DP = 12f
         private const val TWO_TAP_MAX_MS = 300L
