@@ -4,10 +4,11 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
-import android.os.SystemClock
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import app.opendisplay.receiver.protocol.WireProtocol
-import java.net.Inet4Address
 
 /**
  * Discovers OpenDisplay Mac hosts that advertise reverse-connect
@@ -25,31 +26,40 @@ class MacHostBrowser(
     private val tag = "MacHostBrowser"
     private val appContext = context.applicationContext
     private val nsd = appContext.getSystemService(Context.NSD_SERVICE) as NsdManager
+    @Volatile
     private var discovery: NsdManager.DiscoveryListener? = null
     private var multicastLock: WifiManager.MulticastLock? = null
     private val resolving = HashSet<String>()
-    /** host:port → last dial attempt elapsedRealtime */
-    private val lastDialAt = HashMap<String, Long>()
-    private val dialCooldownMs = 8_000L
+    private val handler = Handler(Looper.getMainLooper())
+    private var restart: Runnable? = null
+    private val found = HashSet<String>()
 
     @Volatile
     var running = false
         private set
 
+    @Synchronized
     fun start() {
         if (running) return
         running = true
+        beginDiscovery()
+    }
+
+    private fun beginDiscovery() {
         acquireMulticastLock()
         val listener = object : NsdManager.DiscoveryListener {
+            private fun isCurrent() = running && discovery === this
             override fun onDiscoveryStarted(regType: String) {
                 Log.i(tag, "discovering $regType")
             }
 
             override fun onServiceFound(service: NsdServiceInfo) {
+                if (!isCurrent()) return
                 val type = service.serviceType ?: return
                 if (!type.contains("opendisplay-mac", ignoreCase = true)) return
                 val key = "${service.serviceName}|$type"
                 synchronized(resolving) {
+                    found.add(key)
                     if (!resolving.add(key)) return
                 }
                 Log.i(tag, "found Mac host candidate \"${service.serviceName}\" type=$type")
@@ -57,14 +67,18 @@ class MacHostBrowser(
                     nsd.resolveService(
                         service,
                         object : NsdManager.ResolveListener {
+                            private var retried = false
                             override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                                if (!isCurrent()) return
                                 Log.w(tag, "resolve failed $errorCode for ${serviceInfo.serviceName}")
                                 synchronized(resolving) { resolving.remove(key) }
                                 // Retry once after a short pause (OEM mDNS flakes).
-                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                    if (!running) return@postDelayed
+                                if (retried) return
+                                retried = true
+                                handler.postDelayed({
+                                    if (!isCurrent()) return@postDelayed
                                     synchronized(resolving) {
-                                        if (!resolving.add(key)) return@postDelayed
+                                        if (key !in found || !resolving.add(key)) return@postDelayed
                                     }
                                     try {
                                         nsd.resolveService(serviceInfo, this)
@@ -76,7 +90,11 @@ class MacHostBrowser(
                             }
 
                             override fun onServiceResolved(info: NsdServiceInfo) {
-                                synchronized(resolving) { resolving.remove(key) }
+                                if (!isCurrent()) return
+                                synchronized(resolving) {
+                                    resolving.remove(key)
+                                    if (key !in found) return
+                                }
                                 val port = if (info.port > 0) info.port else WireProtocol.MAC_REVERSE_PORT
                                 val host = pickIPv4(info)
                                     ?: txtIp(info)
@@ -90,17 +108,7 @@ class MacHostBrowser(
                                     Log.w(tag, "skip IPv6-only host $host")
                                     return
                                 }
-                                val dialKey = "$host:$port"
-                                val now = SystemClock.elapsedRealtime()
-                                synchronized(lastDialAt) {
-                                    val prev = lastDialAt[dialKey] ?: 0L
-                                    if (now - prev < dialCooldownMs) {
-                                        Log.d(tag, "cooldown $dialKey")
-                                        return
-                                    }
-                                    lastDialAt[dialKey] = now
-                                }
-                                Log.i(tag, "resolved Mac \"${info.serviceName}\" → $host:$port — dialing")
+                                Log.i(tag, "resolved Mac \"${info.serviceName}\" → $host:$port")
                                 onHost(host, port, info.serviceName ?: "Mac")
                             }
                         },
@@ -112,6 +120,10 @@ class MacHostBrowser(
             }
 
             override fun onServiceLost(service: NsdServiceInfo) {
+                if (!isCurrent()) return
+                synchronized(resolving) {
+                    found.remove("${service.serviceName}|${service.serviceType}")
+                }
                 Log.i(tag, "lost ${service.serviceName}")
                 service.serviceName?.let(onLost)
             }
@@ -122,10 +134,7 @@ class MacHostBrowser(
 
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
                 Log.e(tag, "start discovery failed: $errorCode — restarting in 3s")
-                running = false
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    if (discovery == null) start()
-                }, 3000)
+                retryDiscovery(this)
             }
 
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
@@ -137,12 +146,32 @@ class MacHostBrowser(
             nsd.discoverServices(WireProtocol.MAC_HOST_SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
         } catch (e: Exception) {
             Log.e(tag, "discoverServices threw", e)
-            running = false
+            retryDiscovery(listener)
         }
     }
 
+    @Synchronized
+    private fun retryDiscovery(failed: NsdManager.DiscoveryListener) {
+        if (!running || discovery !== failed) return
+        discovery = null
+        // Android removes a failed discovery request itself. Do not stop an
+        // unregistered listener; release our state and create a fresh request.
+        synchronized(resolving) { resolving.clear(); found.clear() }
+        releaseMulticastLock()
+        restart?.let(handler::removeCallbacks)
+        restart = Runnable {
+            synchronized(this) {
+                restart = null
+                if (running && discovery == null) beginDiscovery()
+            }
+        }.also { handler.postDelayed(it, 3000) }
+    }
+
+    @Synchronized
     fun stop() {
         running = false
+        restart?.let(handler::removeCallbacks)
+        restart = null
         discovery?.let {
             try {
                 nsd.stopServiceDiscovery(it)
@@ -150,24 +179,19 @@ class MacHostBrowser(
             }
         }
         discovery = null
-        synchronized(resolving) { resolving.clear() }
+        synchronized(resolving) { resolving.clear(); found.clear() }
         releaseMulticastLock()
     }
 
     private fun pickIPv4(info: NsdServiceInfo): String? {
-        // API 34+ may expose hostAddresses; fall back to host.
-        try {
-            val method = info.javaClass.getMethod("getHostAddresses")
-            @Suppress("UNCHECKED_CAST")
-            val addrs = method.invoke(info) as? Array<java.net.InetAddress>
-            addrs?.firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
-                ?.hostAddress
-                ?.let { return it }
-        } catch (_: Exception) {
+        // API 34 returns a List, not an Array. The deprecated host property
+        // can return IPv6 even when a usable IPv4 address is in this list.
+        val addresses = if (Build.VERSION.SDK_INT >= 34) {
+            info.hostAddresses
+        } else {
+            listOfNotNull(info.host)
         }
-        val h = info.host
-        if (h is Inet4Address && !h.isLoopbackAddress) return h.hostAddress
-        return null
+        return MacHostAddress.pickIPv4(addresses)
     }
 
     private fun txtIp(info: NsdServiceInfo): String? {
