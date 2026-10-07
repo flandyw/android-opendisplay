@@ -63,7 +63,7 @@ class AudioPlayer {
                 sampleRate,
                 channelMask,
                 AudioFormat.ENCODING_PCM_16BIT,
-            ).coerceAtLeast(sampleRate / 10 * channels * 2) // ~100ms
+            ).coerceAtLeast(sampleRate * TARGET_BUFFER_MS / 1000 * channels * 2)
         try {
             val t =
                 AudioTrack.Builder()
@@ -80,7 +80,10 @@ class AudioPlayer {
                             .setChannelMask(channelMask)
                             .build(),
                     )
-                    .setBufferSizeInBytes(minBuf * 2)
+                    // Non-blocking writes drop what doesn't fit, so this buffer
+                    // is the ceiling on audio lag behind the picture.
+                    .setBufferSizeInBytes(minBuf)
+                    .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                     .setTransferMode(AudioTrack.MODE_STREAM)
                     .build()
             t.play()
@@ -113,6 +116,8 @@ class AudioPlayer {
     }
 
     companion object {
+        private const val TARGET_BUFFER_MS = 60
+
         fun isAudioFrame(payload: ByteArray): Boolean {
             if (payload.size < 4) return false
             return payload[0] == 'A'.code.toByte() &&

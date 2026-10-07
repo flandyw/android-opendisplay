@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.os.Build
 import android.util.Log
 import app.opendisplay.receiver.protocol.WireProtocol
 
@@ -93,12 +94,19 @@ class NsdAdvertiser(context: Context) {
         if (wifiLock?.isHeld == true) return
         try {
             val wifi = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return
+            // FULL_HIGH_PERF is a no-op from API 29; the low-latency mode is what
+            // actually disables Wi‑Fi power-save batching while the screen is on.
             @Suppress("DEPRECATION")
-            val lock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "opendisplay-wifi")
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
+            val lock = wifi.createWifiLock(mode, "opendisplay-wifi")
             lock.setReferenceCounted(false)
             lock.acquire()
             wifiLock = lock
-            Log.i(tag, "Wi‑Fi high-perf lock acquired")
+            Log.i(tag, "Wi‑Fi lock acquired mode=$mode")
         } catch (e: Exception) {
             Log.w(tag, "wifi lock: ${e.message}")
         }

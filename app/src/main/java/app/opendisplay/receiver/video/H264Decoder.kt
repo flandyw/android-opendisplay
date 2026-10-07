@@ -3,6 +3,7 @@ package app.opendisplay.receiver.video
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.os.Build
+import android.os.Process
 import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
@@ -13,7 +14,10 @@ import java.util.concurrent.atomic.AtomicLong
  * Hardware H.264 decode into a Surface. Configures from in-band SPS/PPS.
  *
  * Latency policy:
- * - Never block waiting for an input buffer (timeout 0) — drop the frame instead.
+ * - Output is drained by a dedicated thread that renders each frame the moment
+ *   the codec produces it. (Draining only on the next input would hold every
+ *   frame back by one network inter-arrival — a whole frame on a static screen.)
+ * - Input waits at most a few ms for a buffer, then drops the frame.
  * - When several output buffers are ready, render only the newest (drop older).
  * - After input drops, request a keyframe so the stream can recover.
  *
@@ -26,17 +30,19 @@ class H264Decoder(
     private val onVideoSize: (width: Int, height: Int) -> Unit,
 ) {
     private val tag = "H264Decoder"
-    private var codec: MediaCodec? = null
+    @Volatile private var codec: MediaCodec? = null
     private var surface: Surface? = null
     private var sps: ByteArray? = null
     private var pps: ByteArray? = null
     private var configured = false
     private val released = AtomicBoolean(false)
     private var ptsUs = 0L
+    // Queue time per in-flight frame, indexed by pts (== frame sequence) so the
+    // drain thread can report real decode latency.
+    private val queuedAtNs = LongArray(QUEUE_RING)
     private var configureAttempts = 0
     private var consecutiveInputDrops = 0
     private var lastKeyframeRequestMs = 0L
-    private val outputInfo = MediaCodec.BufferInfo()
 
     private val framesIn = AtomicLong(0)
     private val framesOut = AtomicLong(0)
@@ -104,7 +110,6 @@ class H264Decoder(
     fun feedParsed(parsed: AnnexBParser.ParsedFrame) {
         if (released.get()) return
 
-        val feedStartNs = System.nanoTime()
         var formatChanged = false
         for (nalu in parsed.nalus) {
             when (nalu.type) {
@@ -139,22 +144,8 @@ class H264Decoder(
 
         if (!configured) return
 
-        // Release ready output before asking for input: a codec can run out of
-        // input buffers while waiting for us to return its output buffers.
-        drainOutput()
-        if (!configured || parsed.decoderInputSize == 0) return
-        if (!queueInput(parsed)) {
-            return
-        }
-        framesIn.incrementAndGet()
-        drainOutput()
-        val decodeMs = (System.nanoTime() - feedStartNs) / 1_000_000.0
-        synchronized(sampleLock) {
-            decodeMsSamples.add(decodeMs)
-            if (decodeMsSamples.size > 120) {
-                decodeMsSamples.removeAt(0)
-            }
-        }
+        if (parsed.decoderInputSize == 0) return
+        if (queueInput(parsed)) framesIn.incrementAndGet()
     }
 
     private fun configure(sps: ByteArray, pps: ByteArray) {
@@ -187,16 +178,12 @@ class H264Decoder(
             val c2 = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             c2.configure(plain, surf, null, 0)
             c2.start()
-            codec = c2
-            configured = true
-            consecutiveInputDrops = 0
+            startOutputThread(c2)
             Log.i(tag, "decoder configured (plain) ${width}x${height} name=${c2.name}")
             return
         }
         c.start()
-        codec = c
-        configured = true
-        consecutiveInputDrops = 0
+        startOutputThread(c)
         Log.i(tag, "decoder configured ${width}x${height} name=${c.name} attempt=$configureAttempts")
     }
 
@@ -208,6 +195,11 @@ class H264Decoder(
         // Real-time priority (API 23+).
         try {
             format.setInteger(MediaFormat.KEY_PRIORITY, 0)
+        } catch (_: Exception) {
+        }
+        // Tell the codec to clock itself for high frame rates (API 23+).
+        try {
+            format.setInteger(MediaFormat.KEY_OPERATING_RATE, 120)
         } catch (_: Exception) {
         }
 
@@ -223,6 +215,7 @@ class H264Decoder(
         // or ignored (Android 8–10 tablets, some Android 11+ builds).
         val vendorFlags = arrayOf(
             "vendor.qti-ext-dec-low-latency.enable",
+            "vendor.rtc-ext-dec-low-latency.enable",
             "vendor.low-latency.enable",
             "low-latency",
             "vdec-lowlatency",
@@ -239,8 +232,10 @@ class H264Decoder(
     private fun queueInput(parsed: AnnexBParser.ParsedFrame): Boolean {
         val c = codec ?: return false
         try {
-            // Non-blocking: never stall the TCP read loop waiting on the codec.
-            val inIndex = c.dequeueInputBuffer(0)
+            // Output is drained concurrently, so a buffer frees up within a
+            // millisecond or two; wait that long rather than drop a P-frame
+            // (a drop corrupts the picture until the next keyframe).
+            val inIndex = c.dequeueInputBuffer(INPUT_WAIT_US)
             if (inIndex < 0) {
                 inputDrops.incrementAndGet()
                 consecutiveInputDrops++
@@ -266,7 +261,8 @@ class H264Decoder(
                 return false
             }
             parsed.writeDecoderInput(buf)
-            ptsUs += 16_666
+            ptsUs++
+            queuedAtNs[(ptsUs % QUEUE_RING).toInt()] = System.nanoTime()
             c.queueInputBuffer(inIndex, 0, parsed.decoderInputSize, ptsUs, 0)
             return true
         } catch (e: Exception) {
@@ -286,47 +282,87 @@ class H264Decoder(
         onNeedKeyframe()
     }
 
-    private fun drainOutput() {
-        val c = codec ?: return
-        // Keep only the newest ready buffer, returning older buffers promptly.
-        var pending = -1
-        try {
-            while (true) {
-                val outIndex = c.dequeueOutputBuffer(outputInfo, 0)
-                when {
-                    outIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> break
-                    outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                        val fmt = c.outputFormat
-                        val w = fmt.getInteger(MediaFormat.KEY_WIDTH)
-                        val h = fmt.getInteger(MediaFormat.KEY_HEIGHT)
-                        Log.i(tag, "output format $w x $h")
-                        onVideoSize(w, h)
-                    }
-                    outIndex >= 0 -> {
-                        if (pending >= 0) {
-                            c.releaseOutputBuffer(pending, false)
-                            outputDrops.incrementAndGet()
+    /**
+     * One drain thread per codec instance. Blocks in dequeueOutputBuffer so a
+     * decoded frame is rendered immediately; exits when the codec is replaced
+     * or released.
+     */
+    private fun startOutputThread(c: MediaCodec) {
+        codec = c
+        configured = true
+        consecutiveInputDrops = 0
+        Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
+            drainLoop(c)
+        }, "h264-output").start()
+    }
+
+    private fun drainLoop(c: MediaCodec) {
+        val info = MediaCodec.BufferInfo()
+        while (codec === c) {
+            // Keep only the newest ready buffer, returning older ones promptly.
+            var pending = -1
+            var pendingPts = 0L
+            try {
+                var wait = OUTPUT_WAIT_US
+                while (true) {
+                    val outIndex = c.dequeueOutputBuffer(info, wait)
+                    wait = 0
+                    when {
+                        outIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> break
+                        outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            val fmt = c.outputFormat
+                            val w = fmt.getInteger(MediaFormat.KEY_WIDTH)
+                            val h = fmt.getInteger(MediaFormat.KEY_HEIGHT)
+                            Log.i(tag, "output format $w x $h")
+                            onVideoSize(w, h)
                         }
-                        pending = outIndex
+                        outIndex >= 0 -> {
+                            if (pending >= 0) {
+                                c.releaseOutputBuffer(pending, false)
+                                outputDrops.incrementAndGet()
+                            }
+                            pending = outIndex
+                            pendingPts = info.presentationTimeUs
+                        }
                     }
                 }
-            }
-            if (pending < 0) return
-            c.releaseOutputBuffer(pending, true)
-            pending = -1
-            framesOut.incrementAndGet()
-        } catch (e: Exception) {
-            Log.e(tag, "drainOutput failed", e)
-            if (pending >= 0) {
-                try {
-                    c.releaseOutputBuffer(pending, false)
-                } catch (_: Exception) {
+                if (pending < 0) continue
+                c.releaseOutputBuffer(pending, true)
+                pending = -1
+                framesOut.incrementAndGet()
+                recordDecodeMs(pendingPts)
+            } catch (e: Exception) {
+                if (pending >= 0) {
+                    try {
+                        c.releaseOutputBuffer(pending, false)
+                    } catch (_: Exception) {
+                    }
                 }
+                onDrainFailed(c, e)
+                return
             }
-            releaseCodecOnly()
-            configured = false
-            requestKeyframeThrottled()
         }
+    }
+
+    private fun recordDecodeMs(pts: Long) {
+        val queuedAt = queuedAtNs[(pts % QUEUE_RING).toInt()]
+        if (queuedAt == 0L) return
+        val ms = (System.nanoTime() - queuedAt) / 1_000_000.0
+        synchronized(sampleLock) {
+            decodeMsSamples.add(ms)
+            if (decodeMsSamples.size > 120) decodeMsSamples.removeAt(0)
+        }
+    }
+
+    @Synchronized
+    private fun onDrainFailed(c: MediaCodec, e: Exception) {
+        // Codec already replaced/released by us — the exception is expected.
+        if (codec !== c) return
+        Log.e(tag, "drainOutput failed", e)
+        releaseCodecOnly()
+        configured = false
+        requestKeyframeThrottled()
     }
 
     @Synchronized
@@ -336,16 +372,18 @@ class H264Decoder(
     }
 
     private fun releaseCodecOnly() {
-        try {
-            codec?.stop()
-        } catch (_: Exception) {
-        }
-        try {
-            codec?.release()
-        } catch (_: Exception) {
-        }
+        // Clear first so the drain thread sees the swap and exits quietly.
+        val c = codec
         codec = null
         configured = false
+        try {
+            c?.stop()
+        } catch (_: Exception) {
+        }
+        try {
+            c?.release()
+        } catch (_: Exception) {
+        }
     }
 
     private fun withStartCode(nalu: ByteArray): ByteArray {
@@ -372,6 +410,10 @@ class H264Decoder(
     }
 
     companion object {
+        private const val QUEUE_RING = 64
+        private const val INPUT_WAIT_US = 4_000L
+        private const val OUTPUT_WAIT_US = 10_000L
+
         /**
          * p in [0,1]. Tolerates empty lists and nulls (concurrent snapshot races).
          */

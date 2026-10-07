@@ -450,6 +450,9 @@ private fun ReceiverScreen(
 
                     setOnTouchListener { v, event ->
                         // Idle UI must never forward taps to the Mac underneath it.
+                        // Deliver every sample as it happens instead of batching
+                        // to the next vsync — less pointer/pen lag.
+                        if (streaming) v.requestUnbufferedDispatch(event)
                         val handled = if (streaming) onTouch(event, v.width, v.height) else true
                         if (handled) v.performClick()
                         handled

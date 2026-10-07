@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.util.Log
 import app.opendisplay.receiver.audio.AudioPlayer
 import app.opendisplay.receiver.protocol.WireMessage
@@ -16,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -90,6 +92,9 @@ class ReceiverServer(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val writeMutex = Mutex()
+    // Input events go through one ordered queue: separate launch{} coroutines
+    // on Dispatchers.IO can reorder (e.g. "ended" overtaking "moved").
+    private val outbox = Channel<JSONObject>(Channel.UNLIMITED)
     // Guarded by writeMutex; reuse the buffer for every control/touch message.
     private var outputSocket: Socket? = null
     private var clientOutput: BufferedOutputStream? = null
@@ -151,6 +156,9 @@ class ReceiverServer(
     fun start(port: Int = WireProtocol.DEFAULT_PORT) {
         if (running) return
         running = true
+        scope.launch {
+            for (msg in outbox) sendJson(msg)
+        }
         this.port = port
         acceptJob = scope.launch { listenLoop() }
     }
@@ -301,21 +309,19 @@ class ReceiverServer(
      * keys and treat the event as a plain touch.
      */
     fun sendTouch(phase: String, x: Double, y: Double, pen: PenState? = null) {
-        scope.launch {
-            val msg = JSONObject()
-                .put("type", WireMessage.TOUCH)
-                .put("phase", phase)
-                .put("x", x)
-                .put("y", y)
-            if (pen != null) {
-                msg.put("tool", if (pen.eraser) "eraser" else "stylus")
-                    .put("pressure", pen.pressure.toDouble())
-                    .put("tilt", pen.tilt.toDouble())
-                    .put("azimuth", pen.azimuth.toDouble())
-                    .put("barrel", pen.barrel)
-            }
-            sendJson(msg)
+        val msg = JSONObject()
+            .put("type", WireMessage.TOUCH)
+            .put("phase", phase)
+            .put("x", x)
+            .put("y", y)
+        if (pen != null) {
+            msg.put("tool", if (pen.eraser) "eraser" else "stylus")
+                .put("pressure", pen.pressure.toDouble())
+                .put("tilt", pen.tilt.toDouble())
+                .put("azimuth", pen.azimuth.toDouble())
+                .put("barrel", pen.barrel)
         }
+        outbox.trySend(msg)
     }
 
     /** Stylus sample: pressure 0..1, tilt/azimuth radians, barrel = side button held. */
@@ -328,14 +334,12 @@ class ReceiverServer(
     )
 
     fun sendScroll(dx: Double, dy: Double) {
-        scope.launch {
-            sendJson(
-                JSONObject()
-                    .put("type", WireMessage.SCROLL)
-                    .put("dx", dx)
-                    .put("dy", dy),
-            )
-        }
+        outbox.trySend(
+            JSONObject()
+                .put("type", WireMessage.SCROLL)
+                .put("dx", dx)
+                .put("dy", dy),
+        )
     }
 
     fun announceSleeping() {
@@ -353,9 +357,7 @@ class ReceiverServer(
     }
 
     fun requestKeyframe() {
-        scope.launch {
-            sendJson(JSONObject().put("type", WireMessage.KF))
-        }
+        outbox.trySend(JSONObject().put("type", WireMessage.KF))
     }
 
     /**
@@ -368,17 +370,15 @@ class ReceiverServer(
      * @param z   pinch scale (≥ 1); used for bitrate boost
      */
     fun sendViewport(x: Double, y: Double, w: Double, h: Double, z: Double) {
-        scope.launch {
-            sendJson(
-                JSONObject()
-                    .put("type", WireMessage.VIEWPORT)
-                    .put("x", x)
-                    .put("y", y)
-                    .put("w", w)
-                    .put("h", h)
-                    .put("z", z),
-            )
-        }
+        outbox.trySend(
+            JSONObject()
+                .put("type", WireMessage.VIEWPORT)
+                .put("x", x)
+                .put("y", y)
+                .put("w", w)
+                .put("h", h)
+                .put("z", z),
+        )
     }
 
     private suspend fun listenLoop() {
@@ -456,12 +456,20 @@ class ReceiverServer(
         )
         Log.i(tag, "session from ${socket.inetAddress?.hostAddress}")
 
+        var boostedTid = -1
+        var priorityBefore = 0
         try {
             sendHello()
             startPing()
             startWatchdog()
             startStats()
 
+            // The read loop below never suspends, so it stays on this thread.
+            // It feeds the decoder: keep it ahead of background work, and
+            // restore afterwards because IO pool threads are shared.
+            boostedTid = Process.myTid()
+            priorityBefore = Process.getThreadPriority(boostedTid)
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
             val input = BufferedInputStream(socket.getInputStream(), 256 * 1024)
             while (scope.isActive && !socket.isClosed) {
                 val frame = FrameCodec.readFrame(input) ?: break
@@ -471,6 +479,7 @@ class ReceiverServer(
         } catch (e: Exception) {
             Log.i(tag, "session ended: ${e.message}")
         } finally {
+            if (boostedTid == Process.myTid()) Process.setThreadPriority(priorityBefore)
             pingJob?.cancel()
             watchdogJob?.cancel()
             statsJob?.cancel()
