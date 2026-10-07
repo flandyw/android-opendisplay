@@ -9,6 +9,7 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import app.opendisplay.receiver.net.ReceiverServer
 import kotlin.math.abs
+import kotlin.math.hypot
 
 /**
  * Maps MotionEvents to OpenDisplay touch/scroll JSON (WIRE.md) and local
@@ -19,6 +20,15 @@ import kotlin.math.abs
  * - Pinch keeps content under the focus point; pan is never gated on
  *   ScaleGestureDetector (which otherwise blocks two-finger translate).
  *
+ * Sidecar-style extras:
+ * - 3 fingers: swipe left/right = undo/redo, pinch in/out = copy/paste
+ * - 4 fingers: swipe up = Mission Control, down = App Exposé, left/right = Spaces
+ * - Two-finger tap = right-click; mouse secondary button = right-click
+ * - Pen-only mode: fingers scroll instead of click
+ * - Large contacts (palms) are ignored
+ * Shortcuts and right-click need the Mac to advertise `key` / `click`
+ * (see [app.opendisplay.receiver.protocol.WireCaps]); otherwise they no-op.
+ *
  * Zoom is also reported to the Mac (`viewport`) so capture can crop to the
  * visible rect and re-encode it at full stream resolution — local scale alone
  * only magnifies compressed pixels.
@@ -26,8 +36,15 @@ import kotlin.math.abs
 class TouchMapper(
     context: Context,
     private val server: ReceiverServer,
+    private val controls: InputControls = InputControls(),
+    private val onHaptic: () -> Unit = {},
     private val onViewportChanged: (Viewport) -> Unit = {},
 ) {
+    private val density = context.resources.displayMetrics.density
+    private val palmMajorPx = PALM_MAJOR_DP * density
+    private val swipePx = SWIPE_DP * density
+    private val tapSlopPx = TAP_SLOP_DP * density
+
     data class Viewport(
         val scale: Float = 1f,
         /** Pan in view pixels (translation after scale around view center). */
@@ -70,6 +87,32 @@ class TouchMapper(
 
     /** One-finger Mac drag in progress. */
     private var macDragging = false
+
+    /** Contact judged to be a palm: ignore until every pointer lifts. */
+    private var palmGesture = false
+
+    /** Pen-only mode: one finger scrolls the Mac instead of clicking. */
+    private var fingerScrolling = false
+    private var lastScrollX = 0f
+    private var lastScrollY = 0f
+
+    /** Mouse right-click was sent as a `click`; swallow the rest of that press. */
+    private var swallowMouse = false
+
+    /** 3+ finger shortcut gesture; blocks scroll/zoom until all fingers lift. */
+    private var comboActive = false
+    private var comboFired = false
+    private var comboCount = 0
+    private var comboStartX = 0f
+    private var comboStartY = 0f
+    private var comboStartSpan = 1f
+
+    /** Two-finger tap → right-click. */
+    private var twoTapEligible = false
+    private var twoTapStartMs = 0L
+    private var twoTapStartX = 0f
+    private var twoTapStartY = 0f
+    private var twoTapScale = 1f
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var lastViewportSentMs = 0L
@@ -148,9 +191,21 @@ class TouchMapper(
 
         // Palm rejection: ignore fingers while the pen is down.
         if (penDown) return true
+        if (rejectPalm(event)) return true
+        if (handleMouseButton(event)) return true
 
-        gestureDetector.onTouchEvent(event)
-        scaleDetector.onTouchEvent(event)
+        if (event.actionMasked == MotionEvent.ACTION_POINTER_DOWN && event.pointerCount >= 3 && !comboActive) {
+            // Shortcut gestures own the touch: stop zoom/scroll tracking.
+            comboActive = true
+            val cancel = MotionEvent.obtain(event)
+            cancel.action = MotionEvent.ACTION_CANCEL
+            scaleDetector.onTouchEvent(cancel)
+            cancel.recycle()
+        }
+        if (!comboActive) {
+            gestureDetector.onTouchEvent(event)
+            scaleDetector.onTouchEvent(event)
+        }
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -159,12 +214,20 @@ class TouchMapper(
                 panningViewport = false
                 macDragging = false
                 midInitialized = false
+                fingerScrolling = false
+                comboActive = false
+                comboFired = false
+                twoTapEligible = false
 
                 if (isZoomed) {
                     // One-finger drag pans the local viewport.
                     panningViewport = true
                     lastPanX = event.x
                     lastPanY = event.y
+                } else if (controls.penOnly && event.getToolType(0) != MotionEvent.TOOL_TYPE_MOUSE) {
+                    fingerScrolling = true
+                    lastScrollX = event.x
+                    lastScrollY = event.y
                 } else {
                     macDragging = true
                     sendMappedTouch(event, "began")
@@ -175,15 +238,42 @@ class TouchMapper(
                 multiFinger = true
                 macDragging = false
                 panningViewport = false
+                fingerScrolling = false
                 midInitialized = true
                 lastMidX = midpointX(event)
                 lastMidY = midpointY(event)
+                if (event.pointerCount == 2) {
+                    twoTapEligible = true
+                    twoTapStartMs = event.eventTime
+                    twoTapStartX = lastMidX
+                    twoTapStartY = lastMidY
+                    twoTapScale = scale
+                } else {
+                    twoTapEligible = false
+                    startCombo(event)
+                }
             }
 
             MotionEvent.ACTION_MOVE -> {
                 when {
+                    event.pointerCount >= 3 -> handleCombo(event)
+                    comboActive -> Unit // fingers lifting out of a shortcut gesture
                     event.pointerCount >= 2 -> {
+                        if (twoTapEligible &&
+                            hypot(midpointX(event) - twoTapStartX, midpointY(event) - twoTapStartY) > tapSlopPx
+                        ) {
+                            twoTapEligible = false
+                        }
                         handleTwoFingerMove(event, viewW, viewH)
+                    }
+                    fingerScrolling -> {
+                        val dx = event.x - lastScrollX
+                        val dy = event.y - lastScrollY
+                        lastScrollX = event.x
+                        lastScrollY = event.y
+                        if (abs(dx) >= 0.5f || abs(dy) >= 0.5f) {
+                            server.sendScroll((dx / viewW * videoWidth).toDouble(), (dy / viewH * videoHeight).toDouble())
+                        }
                     }
                     isZoomed && panningViewport -> {
                         val dx = event.x - lastPanX
@@ -204,6 +294,8 @@ class TouchMapper(
             }
 
             MotionEvent.ACTION_POINTER_UP -> {
+                if (twoTapEligible && event.pointerCount == 2) tryRightClickTap(event)
+                twoTapEligible = false
                 // Still multi until all fingers up — avoid accidental click.
                 multiFinger = event.pointerCount > 2
                 midInitialized = false
@@ -230,6 +322,10 @@ class TouchMapper(
                 macDragging = false
                 didMacScroll = false
                 midInitialized = false
+                fingerScrolling = false
+                comboActive = false
+                comboFired = false
+                twoTapEligible = false
             }
 
             MotionEvent.ACTION_CANCEL -> {
@@ -241,9 +337,143 @@ class TouchMapper(
                 macDragging = false
                 didMacScroll = false
                 midInitialized = false
+                fingerScrolling = false
+                comboActive = false
+                comboFired = false
+                twoTapEligible = false
             }
         }
         return true
+    }
+
+    /** Drop a palm-sized contact (and the whole gesture it belongs to). */
+    private fun rejectPalm(event: MotionEvent): Boolean {
+        val action = event.actionMasked
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
+            val idx = event.actionIndex
+            if (event.getToolType(idx) == MotionEvent.TOOL_TYPE_FINGER &&
+                event.getTouchMajor(idx) > palmMajorPx
+            ) {
+                palmGesture = true
+                abortFingerGesture(event)
+            }
+        }
+        if (!palmGesture) return false
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) palmGesture = false
+        return true
+    }
+
+    /** Cancel an in-flight finger gesture on the Mac and reset local tracking. */
+    private fun abortFingerGesture(event: MotionEvent) {
+        if (macDragging && !multiFinger) sendMappedTouch(event, "cancelled")
+        multiFinger = false
+        panningViewport = false
+        macDragging = false
+        didMacScroll = false
+        midInitialized = false
+        fingerScrolling = false
+        comboActive = false
+        comboFired = false
+        twoTapEligible = false
+    }
+
+    /**
+     * Mouse / trackpad secondary button → Mac right-click. Everything else
+     * from a mouse flows through the normal one-finger path.
+     * @return true if the event was consumed here
+     */
+    private fun handleMouseButton(event: MotionEvent): Boolean {
+        if (event.getToolType(0) != MotionEvent.TOOL_TYPE_MOUSE) return false
+        val action = event.actionMasked
+        if (swallowMouse) {
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) swallowMouse = false
+            return true
+        }
+        if (action == MotionEvent.ACTION_DOWN && (event.buttonState and MotionEvent.BUTTON_SECONDARY) != 0) {
+            val (nx, ny) = screenToNormalized(event.x, event.y)
+            if (server.sendClick("right", nx, ny, controls.activeMods)) {
+                controls.consumeOneShot()
+                swallowMouse = true
+                return true
+            }
+        }
+        return false
+    }
+
+    /** Pen or mouse hovering above the screen (generic-motion events). */
+    fun onHover(event: MotionEvent, viewW: Int, viewH: Int): Boolean {
+        if (viewW <= 0 || viewH <= 0) return false
+        viewWidth = viewW
+        viewHeight = viewH
+        when (event.actionMasked) {
+            MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_ENTER -> {
+                val (nx, ny) = screenToNormalized(event.x, event.y)
+                val pen = if (isPen(event, 0)) penState(event, 0, 0f, 0f, 0f) else null
+                server.sendHover(nx, ny, pen, controls.activeMods)
+                return true
+            }
+            MotionEvent.ACTION_SCROLL -> {
+                // Mouse wheel / trackpad scroll: ~48px per detent, wheel-up = content down.
+                val dy = event.getAxisValue(MotionEvent.AXIS_VSCROLL) * WHEEL_PX
+                val dx = event.getAxisValue(MotionEvent.AXIS_HSCROLL) * WHEEL_PX
+                if (dx != 0f || dy != 0f) server.sendScroll(dx.toDouble(), dy.toDouble())
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun startCombo(event: MotionEvent) {
+        if (comboFired) return
+        comboCount = event.pointerCount
+        comboStartX = centroidX(event)
+        comboStartY = centroidY(event)
+        comboStartSpan = span(event).coerceAtLeast(1f)
+    }
+
+    private fun handleCombo(event: MotionEvent) {
+        if (comboFired) return
+        if (event.pointerCount != comboCount) {
+            startCombo(event)
+            comboCount = event.pointerCount
+            return
+        }
+        val dx = centroidX(event) - comboStartX
+        val dy = centroidY(event) - comboStartY
+        val ratio = span(event) / comboStartSpan
+        val mods = Mods.CMD
+        val sent = if (comboCount >= 4) {
+            when {
+                abs(dy) >= swipePx && abs(dy) > abs(dx) ->
+                    server.sendShortcut(if (dy < 0) MacKeys.ARROW_UP else MacKeys.ARROW_DOWN, Mods.CTRL)
+                abs(dx) >= swipePx ->
+                    // Natural direction: swiping left moves to the Space on the right.
+                    server.sendShortcut(if (dx < 0) MacKeys.ARROW_RIGHT else MacKeys.ARROW_LEFT, Mods.CTRL)
+                else -> null
+            }
+        } else {
+            when {
+                ratio < PINCH_IN -> server.sendShortcut(MacKeys.C, mods)
+                ratio > PINCH_OUT -> server.sendShortcut(MacKeys.V, mods)
+                abs(dx) >= swipePx && abs(dx) > abs(dy) ->
+                    server.sendShortcut(MacKeys.Z, if (dx < 0) mods else mods or Mods.SHIFT)
+                else -> null
+            }
+        }
+        if (sent != null) {
+            comboFired = true
+            if (sent) onHaptic()
+        }
+    }
+
+    private fun tryRightClickTap(event: MotionEvent) {
+        if (event.eventTime - twoTapStartMs > TWO_TAP_MAX_MS) return
+        if (abs(scale - twoTapScale) > 0.01f) return
+        val (nx, ny) = screenToNormalized(twoTapStartX, twoTapStartY)
+        if (server.sendClick("right", nx, ny, controls.activeMods)) {
+            controls.consumeOneShot()
+            onHaptic()
+        }
     }
 
     /** Stylus pointer currently down (id), or -1. */
@@ -268,12 +498,7 @@ class TouchMapper(
                 isPen(event, idx)
             if (!starts) return false
             // Abort any in-flight finger gesture before the pen takes over.
-            if (macDragging && !multiFinger) sendMappedTouch(event, "cancelled")
-            multiFinger = false
-            panningViewport = false
-            macDragging = false
-            didMacScroll = false
-            midInitialized = false
+            abortFingerGesture(event)
             penPointerId = event.getPointerId(idx)
             sendPen(event, idx, "began")
             return true
@@ -305,6 +530,7 @@ class TouchMapper(
             azimuth = azimuth,
             barrel = (event.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0,
             eraser = event.getToolType(idx) == MotionEvent.TOOL_TYPE_ERASER,
+            barrel2 = (event.buttonState and MotionEvent.BUTTON_STYLUS_SECONDARY) != 0,
         )
 
     private fun sendPen(event: MotionEvent, idx: Int, phase: String) {
@@ -315,7 +541,8 @@ class TouchMapper(
             event.getAxisValue(MotionEvent.AXIS_TILT, idx),
             event.getAxisValue(MotionEvent.AXIS_ORIENTATION, idx),
         )
-        server.sendTouch(phase, nx, ny, pen)
+        server.sendTouch(phase, nx, ny, pen, controls.activeMods)
+        if (phase == "ended") controls.consumeOneShot()
     }
 
     private fun sendPenHistorical(event: MotionEvent, idx: Int, h: Int) {
@@ -326,7 +553,7 @@ class TouchMapper(
             event.getHistoricalAxisValue(MotionEvent.AXIS_TILT, idx, h),
             event.getHistoricalAxisValue(MotionEvent.AXIS_ORIENTATION, idx, h),
         )
-        server.sendTouch("moved", nx, ny, pen)
+        server.sendTouch("moved", nx, ny, pen, controls.activeMods)
     }
 
     private fun handleTwoFingerMove(event: MotionEvent, viewW: Int, viewH: Int) {
@@ -366,7 +593,8 @@ class TouchMapper(
 
     private fun sendMappedTouch(event: MotionEvent, phase: String) {
         val (nx, ny) = screenToNormalized(event.x, event.y)
-        server.sendTouch(phase, nx, ny)
+        server.sendTouch(phase, nx, ny, mods = controls.activeMods)
+        if (phase == "ended") controls.consumeOneShot()
     }
 
     /**
@@ -451,6 +679,27 @@ class TouchMapper(
         mainHandler.postDelayed(task, delay)
     }
 
+    private fun centroidX(e: MotionEvent): Float {
+        var sum = 0f
+        for (i in 0 until e.pointerCount) sum += e.getX(i)
+        return sum / e.pointerCount
+    }
+
+    private fun centroidY(e: MotionEvent): Float {
+        var sum = 0f
+        for (i in 0 until e.pointerCount) sum += e.getY(i)
+        return sum / e.pointerCount
+    }
+
+    /** Mean distance of the pointers from their centroid (pinch size). */
+    private fun span(e: MotionEvent): Float {
+        val cx = centroidX(e)
+        val cy = centroidY(e)
+        var sum = 0f
+        for (i in 0 until e.pointerCount) sum += hypot(e.getX(i) - cx, e.getY(i) - cy)
+        return sum / e.pointerCount
+    }
+
     private fun midpointX(e: MotionEvent): Float =
         if (e.pointerCount >= 2) (e.getX(0) + e.getX(1)) / 2f else e.x
 
@@ -461,5 +710,12 @@ class TouchMapper(
         const val MIN_SCALE = 1f
         const val MAX_SCALE = 5f
         private const val VIEWPORT_MIN_INTERVAL_MS = 33L
+        private const val PALM_MAJOR_DP = 110f
+        private const val SWIPE_DP = 72f
+        private const val TAP_SLOP_DP = 12f
+        private const val TWO_TAP_MAX_MS = 300L
+        private const val PINCH_IN = 0.72f
+        private const val PINCH_OUT = 1.38f
+        private const val WHEEL_PX = 48f
     }
 }

@@ -8,6 +8,7 @@ import android.os.Looper
 import android.os.Process
 import android.util.Log
 import app.opendisplay.receiver.audio.AudioPlayer
+import app.opendisplay.receiver.protocol.WireCaps
 import app.opendisplay.receiver.protocol.WireMessage
 import app.opendisplay.receiver.protocol.WireProtocol
 import app.opendisplay.receiver.video.AnnexBParser
@@ -19,11 +20,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -34,6 +38,7 @@ import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -41,6 +46,8 @@ data class PanelInfo(
     val pixelsWide: Int,
     val pixelsHigh: Int,
     val scale: Double,
+    /** Panel refresh rate in Hz; lets the Mac pick a matching capture rate. */
+    val refreshHz: Double = 60.0,
 )
 
 /** One-second metrics snapshot for the stats loop (thread-safe handoff). */
@@ -86,6 +93,8 @@ class ReceiverServer(
     private val onCursorImage: (pngBase64: String, nw: Double, nh: Double, ax: Double, ay: Double) -> Unit =
         { _, _, _, _, _ -> },
     private val onCursorReset: () -> Unit = {},
+    /** Mac clipboard text — invoked on the main thread. */
+    private val onClipboard: (String) -> Unit = {},
 ) {
     private val tag = "ReceiverServer"
     private val appContext = context.applicationContext
@@ -117,6 +126,19 @@ class ReceiverServer(
 
     private var state = ReceiverUiState()
 
+    /** One-line stream health for the on-screen HUD; updated once a second. */
+    private val hudText = MutableStateFlow("")
+    val hud: StateFlow<String> = hudText
+
+    /** Optional features the connected Mac advertised in `welcome.caps`. */
+    private val capsFlow = MutableStateFlow<Set<String>>(emptySet())
+    val caps: StateFlow<Set<String>> = capsFlow
+
+    // Reverse-dial target, kept so a dropped session can be re-dialed.
+    @Volatile private var lastOutbound: Pair<String, Int>? = null
+    private var reconnectJob: Job? = null
+    private val dialing = AtomicBoolean(false)
+
     // Clock sync (lowest-RTT sample, same as iOS PhoneReceiver).
     private val offsetSamples = ArrayList<Pair<Double, Double>>(16) // rtt → offset
     @Volatile private var clockOffsetMs: Double? = null
@@ -133,6 +155,8 @@ class ReceiverServer(
     private val e2eWindow = ArrayList<Double>(64)
     private val encodeWindow = ArrayList<Double>(64)
     private var statsReportCounter = 0
+
+    fun hasCap(cap: String): Boolean = cap in capsFlow.value
 
     fun updatePanel(info: PanelInfo) {
         val changed = panel != info
@@ -187,37 +211,67 @@ class ReceiverServer(
         if (state.connected && (existingPeer == "127.0.0.1" || existingPeer == "::1")) {
             Log.i(tag, "connectOutbound replacing adb/loopback session with reverse $host:$port")
         }
+        if (!dialing.compareAndSet(false, true)) return
         scope.launch {
-            // Prefer loopback first (adb reverse); then LAN IP for pure Wi‑Fi.
-            val candidates = linkedSetOf<String>()
-            if (port == WireProtocol.MAC_REVERSE_PORT) {
-                candidates.add("127.0.0.1")
+            try {
+                dial(host, port)
+            } finally {
+                dialing.set(false)
             }
-            candidates.add(host)
-            var lastError: Exception? = null
-            for (candidate in candidates) {
-                try {
-                    Log.i(tag, "dialing Mac $candidate:$port (reverse)")
-                    publish(state.copy(status = "Connecting to Mac $candidate:$port…", connected = false, problem = null))
-                    val socket = openWifiBoundSocket(candidate, port)
-                    closeClient("outbound-replace")
-                    clientSocket.set(socket)
-                    sessionJob?.cancel()
-                    sessionJob = scope.launch { runSession(socket) }
-                    return@launch
-                } catch (e: Exception) {
-                    lastError = e
-                    Log.w(tag, "connectOutbound $candidate:$port failed: ${e.message}")
-                }
+        }
+    }
+
+    private suspend fun dial(host: String, port: Int) {
+        // Prefer loopback first (adb reverse); then LAN IP for pure Wi‑Fi.
+        val candidates = linkedSetOf<String>()
+        if (port == WireProtocol.MAC_REVERSE_PORT) {
+            candidates.add("127.0.0.1")
+        }
+        candidates.add(host)
+        var lastError: Exception? = null
+        for (candidate in candidates) {
+            try {
+                Log.i(tag, "dialing Mac $candidate:$port (reverse)")
+                publish(state.copy(status = "Connecting to Mac $candidate:$port…", connected = false, problem = null))
+                val socket = openWifiBoundSocket(candidate, port)
+                closeClient("outbound-replace")
+                clientSocket.set(socket)
+                lastOutbound = host to port
+                sessionJob?.cancel()
+                sessionJob = scope.launch { runSession(socket, outbound = true) }
+                return
+            } catch (e: Exception) {
+                lastError = e
+                Log.w(tag, "connectOutbound $candidate:$port failed: ${e.message}")
             }
-            publish(
-                state.copy(
-                    status = "Mac unreachable — ${lastError?.message ?: "no route"}",
-                    problem = ReceiverProblem.UNREACHABLE,
-                    connected = false,
-                    streaming = false,
-                ),
-            )
+        }
+        publish(
+            state.copy(
+                status = "Mac unreachable — ${lastError?.message ?: "no route"}",
+                problem = ReceiverProblem.UNREACHABLE,
+                connected = false,
+                streaming = false,
+            ),
+        )
+    }
+
+    /**
+     * Re-dial the Mac after an outbound session drops (Mac restarted, Wi‑Fi
+     * blip, watchdog). Backs off 1s → 8s; gives up after a minute or so and
+     * leaves the usual discovery path to pick the Mac up again.
+     */
+    private fun scheduleReconnect() {
+        val target = lastOutbound ?: return
+        if (!running) return
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            var wait = 1_000L
+            repeat(RECONNECT_ATTEMPTS) {
+                delay(wait)
+                if (!running || state.connected || clientSocket.get() != null) return@launch
+                connectOutbound(target.first, target.second)
+                wait = (wait * 2).coerceAtMost(8_000L)
+            }
         }
     }
 
@@ -308,20 +362,72 @@ class ReceiverServer(
      * [pen] is optional stylus metadata; older Mac builds ignore the extra
      * keys and treat the event as a plain touch.
      */
-    fun sendTouch(phase: String, x: Double, y: Double, pen: PenState? = null) {
+    fun sendTouch(phase: String, x: Double, y: Double, pen: PenState? = null, mods: Int = 0) {
         val msg = JSONObject()
             .put("type", WireMessage.TOUCH)
             .put("phase", phase)
             .put("x", x)
             .put("y", y)
+        if (mods != 0) msg.put("mods", mods)
         if (pen != null) {
             msg.put("tool", if (pen.eraser) "eraser" else "stylus")
                 .put("pressure", pen.pressure.toDouble())
                 .put("tilt", pen.tilt.toDouble())
                 .put("azimuth", pen.azimuth.toDouble())
                 .put("barrel", pen.barrel)
+            if (pen.barrel2) msg.put("barrel2", true)
         }
         outbox.trySend(msg)
+    }
+
+    /** Pen / mouse hover before contact. No-op unless the Mac advertised [WireCaps.HOVER]. */
+    fun sendHover(x: Double, y: Double, pen: PenState? = null, mods: Int = 0) {
+        if (!hasCap(WireCaps.HOVER)) return
+        sendTouch("hover", x, y, pen, mods)
+    }
+
+    /** Right-click etc. @return false if the Mac cannot take it (caller may fall back). */
+    fun sendClick(button: String, x: Double, y: Double, mods: Int = 0): Boolean {
+        if (!hasCap(WireCaps.CLICK)) return false
+        val msg = JSONObject()
+            .put("type", WireMessage.CLICK)
+            .put("button", button)
+            .put("x", x)
+            .put("y", y)
+        if (mods != 0) msg.put("mods", mods)
+        return outbox.trySend(msg).isSuccess
+    }
+
+    /** One keyboard event; [code] is a macOS virtual key code. */
+    fun sendKey(code: Int, down: Boolean, mods: Int, chars: String? = null, repeat: Boolean = false): Boolean {
+        if (!hasCap(WireCaps.KEY)) return false
+        val msg = JSONObject()
+            .put("type", WireMessage.KEY)
+            .put("code", code)
+            .put("down", down)
+            .put("mods", mods)
+        if (!chars.isNullOrEmpty()) msg.put("chars", chars)
+        if (repeat) msg.put("repeat", true)
+        return outbox.trySend(msg).isSuccess
+    }
+
+    /** Press and release [code] with [mods], e.g. Cmd+Z. */
+    fun sendShortcut(code: Int, mods: Int): Boolean {
+        if (!sendKey(code, true, mods)) return false
+        return sendKey(code, false, mods)
+    }
+
+    fun sendClipboard(text: String) {
+        if (!hasCap(WireCaps.CLIP) || text.isEmpty() || text.length > MAX_CLIP_CHARS) return
+        outbox.trySend(JSONObject().put("type", WireMessage.CLIP).put("text", text))
+    }
+
+    /** Ask the Mac to mirror (true) or extend (false) its desktop. */
+    fun sendDisplayMode(mirror: Boolean): Boolean {
+        if (!hasCap(WireCaps.MODE)) return false
+        return outbox.trySend(
+            JSONObject().put("type", WireMessage.MODE).put("mode", if (mirror) "mirror" else "extend"),
+        ).isSuccess
     }
 
     /** Stylus sample: pressure 0..1, tilt/azimuth radians, barrel = side button held. */
@@ -331,6 +437,8 @@ class ReceiverServer(
         val azimuth: Float,
         val barrel: Boolean,
         val eraser: Boolean,
+        /** Secondary stylus button (also what a pencil squeeze / double-tap maps to). */
+        val barrel2: Boolean = false,
     )
 
     fun sendScroll(dx: Double, dy: Double) {
@@ -427,6 +535,8 @@ class ReceiverServer(
                     } catch (_: Exception) {
                     }
                     clientSocket.set(socket)
+                    lastOutbound = null
+                    reconnectJob?.cancel()
                     sessionJob = scope.launch { runSession(socket) }
                 }
             } catch (e: Exception) {
@@ -443,7 +553,9 @@ class ReceiverServer(
         }
     }
 
-    private suspend fun runSession(socket: Socket) = withContext(Dispatchers.IO) {
+    private suspend fun runSession(socket: Socket, outbound: Boolean = false) = withContext(Dispatchers.IO) {
+        reconnectJob?.cancel()
+        capsFlow.value = emptySet()
         lastDataMs.set(System.currentTimeMillis())
         resetSessionMetrics()
         publish(
@@ -487,7 +599,11 @@ class ReceiverServer(
                 socket.close()
             } catch (_: Exception) {
             }
-            if (clientSocket.get() === socket) clientSocket.set(null)
+            // Only a session that ended on its own is re-dialed. closeClient()
+            // (replaced / closing / sleeping) clears clientSocket first.
+            val endedByPeer = clientSocket.compareAndSet(socket, null)
+            capsFlow.value = emptySet()
+            hudText.value = ""
             mainHandler.post { onCursorReset() }
             // Keep the TextureView Surface bound — only tear down the codec.
             // setSurface(null) made reconnects stay black: SPS arrived with no
@@ -507,6 +623,7 @@ class ReceiverServer(
                     videoHeight = 0,
                 ),
             )
+            if (endedByPeer && outbound) scheduleReconnect()
         }
     }
 
@@ -592,7 +709,11 @@ class ReceiverServer(
                 }
                 WireMessage.WELCOME -> {
                     val pv = obj.optInt("pv", WireProtocol.ASSUMED_WHEN_ABSENT)
-                    Log.i(tag, "welcome from Mac pv=$pv")
+                    val caps = obj.optJSONArray("caps")
+                    capsFlow.value = buildSet {
+                        if (caps != null) for (i in 0 until caps.length()) add(caps.optString(i))
+                    }
+                    Log.i(tag, "welcome from Mac pv=$pv caps=${capsFlow.value}")
                 }
                 WireMessage.UPDATE_REQUIRED -> {
                     Log.w(tag, "Mac requested update: ${obj.optString("message")}")
@@ -614,6 +735,12 @@ class ReceiverServer(
                         mainHandler.post { onCursorImage(png, nw, nh, ax, ay) }
                     }
                 }
+                WireMessage.CLIP -> {
+                    val text = obj.optString("text")
+                    if (text.isNotEmpty() && text.length <= MAX_CLIP_CHARS) {
+                        mainHandler.post { onClipboard(text) }
+                    }
+                }
                 else -> Log.d(tag, "ignore control type=${obj.optString("type")}")
             }
         } catch (e: Exception) {
@@ -628,6 +755,8 @@ class ReceiverServer(
             .put("pixelsWide", p.pixelsWide)
             .put("pixelsHigh", p.pixelsHigh)
             .put("scale", p.scale)
+            .put("refresh", p.refreshHz)
+            .put("ext", JSONArray(WireCaps.ALL))
             .put("device", "Android")
             .put("id", installId)
             .put("pv", WireProtocol.VERSION)
@@ -687,6 +816,7 @@ class ReceiverServer(
                 if (idle > limit) {
                     Log.w(tag, "watchdog: no data for ${idle}ms — dropping")
                     closeClient("watchdog")
+                    scheduleReconnect()
                     break
                 }
             }
@@ -722,6 +852,9 @@ class ReceiverServer(
                     )
                 }
                 val decSnap = decoder.snapshotAndResetDecodeSamples()
+                hudText.value = "%d fps · %d ms e2e · %d ms rtt · %.1f Mbps · %d drops".format(
+                    fps, e2e50.toInt(), lastRttMs.toInt(), mbps, decSnap.inputDrops + decSnap.outputDrops,
+                )
 
                 statsReportCounter++
                 if (statsReportCounter < 5) continue
@@ -778,6 +911,9 @@ class ReceiverServer(
     }
 
     companion object {
+        private const val RECONNECT_ATTEMPTS = 10
+        private const val MAX_CLIP_CHARS = 256 * 1024
+
         fun localIpv4Addresses(): List<String> {
             val out = ArrayList<String>()
             try {

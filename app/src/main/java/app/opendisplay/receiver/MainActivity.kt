@@ -1,8 +1,15 @@
 package app.opendisplay.receiver
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.graphics.SurfaceTexture
 import android.os.Build
 import android.os.Bundle
+import android.view.HapticFeedbackConstants
+import android.view.InputDevice
+import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
 import android.view.ViewGroup
@@ -33,6 +40,9 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import app.opendisplay.receiver.compat.DeviceReport
+import app.opendisplay.receiver.input.InputControls
+import app.opendisplay.receiver.input.MacKeys
+import app.opendisplay.receiver.input.Mods
 import app.opendisplay.receiver.input.TouchMapper
 import app.opendisplay.receiver.net.DiscoveryProbe
 import app.opendisplay.receiver.net.MacHostBrowser
@@ -41,9 +51,11 @@ import app.opendisplay.receiver.net.PanelInfo
 import app.opendisplay.receiver.net.ReceiverServer
 import app.opendisplay.receiver.net.ReceiverUiState
 import app.opendisplay.receiver.net.WifiNetworkHolder
+import app.opendisplay.receiver.protocol.WireCaps
 import app.opendisplay.receiver.protocol.WireProtocol
 import app.opendisplay.receiver.ui.ConnectionScreen
 import app.opendisplay.receiver.ui.OpenDisplayTheme
+import app.opendisplay.receiver.ui.SidebarOverlay
 import app.opendisplay.receiver.ui.UpdatesUi
 import app.opendisplay.receiver.ui.CursorOverlayView
 import app.opendisplay.receiver.video.H264Decoder
@@ -67,11 +79,26 @@ class MainActivity : ComponentActivity() {
     @Volatile private var holdSurfaceTexture: SurfaceTexture? = null
     @Volatile private var holdSurface: Surface? = null
     @Volatile private var latestViewport: TouchMapper.Viewport = TouchMapper.Viewport()
+    private val controls = InputControls()
+
+    private var clipboard: ClipboardManager? = null
+    /** Last text we put on / read from the clipboard — stops sync echo loops. */
+    private var lastSyncedClip: String? = null
+    private val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
+        val text = clipboard?.primaryClip
+            ?.takeIf { it.itemCount > 0 }
+            ?.getItemAt(0)?.coerceToText(this)?.toString()
+        if (!text.isNullOrEmpty() && text != lastSyncedClip) {
+            lastSyncedClip = text
+            if (::server.isInitialized) server.sendClipboard(text)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        preferHighRefreshRate()
 
         val app = application as OpenDisplayApp
         connectionMode = ConnectionMode.load(this)
@@ -151,8 +178,12 @@ class MainActivity : ComponentActivity() {
             onCursorReset = {
                 cursorView?.clear()
             },
+            onClipboard = { text ->
+                lastSyncedClip = text
+                clipboard?.setPrimaryClip(ClipData.newPlainText("Mac clipboard", text))
+            },
         )
-        touchMapper = TouchMapper(this, server) { viewport ->
+        touchMapper = TouchMapper(this, server, controls, onHaptic = ::haptic) { viewport ->
             latestViewport = viewport
             applyViewport(viewport)
         }
@@ -196,9 +227,33 @@ class MainActivity : ComponentActivity() {
                     onInstall = app.updates::install,
                     onDelete = app.updates::discard,
                 )
+                val controlsUi by controls.ui.collectAsState()
+                val hud by server.hud.collectAsState()
+                val caps by server.caps.collectAsState()
                 ReceiverScreen(
                     state = state,
                     updates = updatesUi,
+                    sidebar = {
+                        SidebarOverlay(
+                            ui = controlsUi,
+                            hud = hud,
+                            keyEnabled = WireCaps.KEY in caps,
+                            modeEnabled = WireCaps.MODE in caps,
+                            onTapMod = controls::tapMod,
+                            onLockMod = controls::lockMod,
+                            onShortcut = { code, mods ->
+                                server.sendShortcut(code, mods or controls.activeMods)
+                                controls.consumeOneShot()
+                            },
+                            onPenOnly = controls::setPenOnly,
+                            onMirror = { mirror ->
+                                if (server.sendDisplayMode(mirror)) controls.setMirror(mirror)
+                            },
+                            onHud = controls::setHud,
+                            onExpanded = controls::setExpanded,
+                            onHaptic = ::haptic,
+                        )
+                    },
                     onConnectionMode = { mode -> setConnectionMode(mode) },
                     onBindViews = { texture, cursor ->
                         videoView = texture
@@ -209,6 +264,16 @@ class MainActivity : ComponentActivity() {
                         releaseHoldSurface()
                         videoSurface?.release()
                         videoSurface = surface
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            // Match the display to the stream rate to avoid judder re-timing.
+                            try {
+                                surface.setFrameRate(
+                                    currentRefreshHz().toFloat(),
+                                    Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                                )
+                            } catch (_: Exception) {
+                            }
+                        }
                         decoder.setSurface(surface)
                     },
                     onSurfaceDestroyed = {
@@ -219,8 +284,9 @@ class MainActivity : ComponentActivity() {
                         videoSurface = null
                     },
                     onTouch = { event, w, h -> touchMapper.onTouch(event, w, h) },
+                    onHover = { event, w, h -> touchMapper.onHover(event, w, h) },
                     onPanelMetrics = { w, h, scale ->
-                        server.updatePanel(PanelInfo(w, h, scale))
+                        server.updatePanel(PanelInfo(w, h, scale, currentRefreshHz()))
                     },
                 )
             }
@@ -232,10 +298,15 @@ class MainActivity : ComponentActivity() {
                     // Do NOT announce sleeping on ON_STOP — the foreground
                     // service keeps the TCP session for a real second-monitor.
                     Lifecycle.Event.ON_START -> {
+                        clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                        clipboard?.addPrimaryClipChangedListener(clipListener)
                         // Always listen on :9000 and re-advertise when visible —
                         // USB mode still accepts network dials (adb forward and Wi‑Fi).
                         ensureListeningAndAdvertising()
                         macHostBrowser?.start()
+                    }
+                    Lifecycle.Event.ON_STOP -> {
+                        clipboard?.removePrimaryClipChangedListener(clipListener)
                     }
                     Lifecycle.Event.ON_DESTROY -> {
                         if (!isChangingConfigurations) {
@@ -354,7 +425,64 @@ class MainActivity : ComponentActivity() {
         val w = metrics.widthPixels
         val h = metrics.heightPixels
         val scale = metrics.density.toDouble()
-        server.updatePanel(PanelInfo(w, h, scale))
+        server.updatePanel(PanelInfo(w, h, scale, currentRefreshHz()))
+    }
+
+    @Suppress("DEPRECATION")
+    private fun currentRefreshHz(): Double =
+        windowManager.defaultDisplay.refreshRate.toDouble().coerceIn(30.0, 240.0)
+
+    /** Ask for the display's fastest mode at the current resolution (e.g. 120 Hz). */
+    @Suppress("DEPRECATION")
+    private fun preferHighRefreshRate() {
+        try {
+            val display = windowManager.defaultDisplay
+            val cur = display.mode
+            val best = display.supportedModes
+                .filter { it.physicalWidth == cur.physicalWidth && it.physicalHeight == cur.physicalHeight }
+                .maxByOrNull { it.refreshRate } ?: return
+            if (best.modeId != cur.modeId) {
+                window.attributes = window.attributes.apply { preferredDisplayModeId = best.modeId }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun haptic() {
+        window.decorView.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+    }
+
+    /**
+     * Hardware-keyboard passthrough: forward typing to the Mac while streaming.
+     * System keys (back, volume, power, …) are left to Android.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (::server.isInitialized && uiState.value.streaming && server.hasCap(WireCaps.KEY) &&
+            forwardKey(event)
+        ) {
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    private fun forwardKey(event: KeyEvent): Boolean {
+        // Soft-keyboard / virtual devices stay with Android.
+        val device = event.device ?: return false
+        if (device.isVirtual || event.source and InputDevice.SOURCE_KEYBOARD == 0) return false
+        val code = MacKeys.fromAndroid(event.keyCode) ?: return false
+        val down = event.action == KeyEvent.ACTION_DOWN
+        if (!down && event.action != KeyEvent.ACTION_UP) return false
+        val mods = Mods.fromMetaState(event.metaState) or controls.activeMods
+        // Plain typing carries the produced character so the Mac can honor the
+        // tablet's layout; shortcuts rely on the key code + modifiers alone.
+        val chars = if (down && mods and (Mods.CMD or Mods.CTRL) == 0) {
+            event.unicodeChar.takeIf { it > 0 }?.let { String(Character.toChars(it)) }
+        } else {
+            null
+        }
+        val sent = server.sendKey(code, down, mods, chars, repeat = down && event.repeatCount > 0)
+        if (sent && !down) controls.consumeOneShot()
+        return sent
     }
 
     fun setImmersiveMode(enabled: Boolean) {
@@ -373,11 +501,13 @@ class MainActivity : ComponentActivity() {
 private fun ReceiverScreen(
     state: ReceiverUiState,
     updates: UpdatesUi,
+    sidebar: @Composable () -> Unit,
     onConnectionMode: (ConnectionMode) -> Unit,
     onBindViews: (TextureView?, CursorOverlayView?) -> Unit,
     onSurfaceReady: (Surface) -> Unit,
     onSurfaceDestroyed: () -> Unit,
     onTouch: (android.view.MotionEvent, Int, Int) -> Boolean,
+    onHover: (android.view.MotionEvent, Int, Int) -> Boolean,
     onPanelMetrics: (widthPx: Int, heightPx: Int, scale: Double) -> Unit,
 ) {
     val activity = LocalContext.current as? MainActivity
@@ -457,6 +587,10 @@ private fun ReceiverScreen(
                         if (handled) v.performClick()
                         handled
                     }
+                    // Pen / mouse hover and mouse-wheel scroll arrive as generic motion.
+                    setOnGenericMotionListener { v, event ->
+                        if (streaming) onHover(event, v.width, v.height) else false
+                    }
                 }
             },
             onRelease = {
@@ -464,7 +598,9 @@ private fun ReceiverScreen(
             },
         )
 
-        if (!state.streaming) {
+        if (state.streaming) {
+            sidebar()
+        } else {
             ConnectionScreen(state, onConnectionMode, updates)
         }
     }

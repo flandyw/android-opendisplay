@@ -35,4 +35,29 @@ object WireMessage {
     const val CURSOR_IMG = "cursorImg"
     /** Visible content rect while pinch-zoomed — Mac crops capture for sharp zoom. */
     const val VIEWPORT = "viewport"
+    /** Keyboard / shortcut event (Android → Mac). See [WireCaps.KEY]. */
+    const val KEY = "key"
+    /** Explicit click with a button, e.g. right-click (Android → Mac). See [WireCaps.CLICK]. */
+    const val CLICK = "click"
+    /** Plain-text clipboard, both directions. See [WireCaps.CLIP]. */
+    const val CLIP = "clip"
+    /** Mirror vs extended desktop request (Android → Mac). See [WireCaps.MODE]. */
+    const val MODE = "mode"
+}
+
+/**
+ * Optional features. The Mac lists the ones it understands in `welcome.caps`;
+ * the tablet only sends a feature's messages when the Mac listed it, so older
+ * Mac builds never see messages they would misread. The tablet lists what it
+ * can send in `hello.ext`.
+ */
+object WireCaps {
+    /** `touch` phase "hover" for pen / mouse hover before contact. */
+    const val HOVER = "hover"
+    const val KEY = "key"
+    const val CLICK = "click"
+    const val CLIP = "clip"
+    const val MODE = "mode"
+
+    val ALL = listOf(HOVER, KEY, CLICK, CLIP, MODE)
 }
