@@ -83,6 +83,7 @@ import app.opendisplay.receiver.input.StylusShortcutManager
 import app.opendisplay.receiver.input.Mods
 import app.opendisplay.receiver.input.TouchMapper
 import app.opendisplay.receiver.net.DiscoveryProbe
+import app.opendisplay.receiver.net.LaunchAutoConnect
 import app.opendisplay.receiver.net.MacHostBrowser
 import app.opendisplay.receiver.net.MacAddress
 import app.opendisplay.receiver.net.NearbyMac
@@ -120,8 +121,7 @@ class MainActivity : ComponentActivity() {
 
     /** Macs on the network that accept reverse connections, shown as one-tap cards. */
     private val nearbyMacs = MutableStateFlow<List<NearbyMac>>(emptyList())
-    /** What the reverse connection being dialed is filed under (Bonjour name, or typed address). */
-    @Volatile private var currentMacKey: String? = null
+    @Volatile private var lastMac: NearbyMac? = null
     private val pairTokens by lazy {
         PairTokens(object : TokenStorage {
             override fun get(key: String) = prefs.getString(key, null)
@@ -130,7 +130,18 @@ class MainActivity : ComponentActivity() {
         })
     }
     private var connectionMode: ConnectionMode = ConnectionMode.NETWORK
-    @Volatile private var quitting = false
+    private val returningToMain = MutableStateFlow(false)
+    private val autoConnectEnabled by lazy { MutableStateFlow(prefs.getBoolean(KEY_AUTO_CONNECT, false)) }
+    private val launchAutoConnect by lazy {
+        LaunchAutoConnect(lifecycleScope) {
+            lastMac?.let { last ->
+                val mac = nearbyMacs.value.firstOrNull { it.name == last.name || it.host == last.host } ?: last
+                if (!receiverStopped && !returningToMain.value && !uiState.value.connected) {
+                    dialMac(last.name, mac.host, mac.port, userInitiated = false)
+                }
+            }
+        }
+    }
     private var receiverStopped = false
 
     /** Bound when the video view is inflated; cursor updates post to it. */
@@ -244,6 +255,7 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+        lastMac = readLastMac()
         streamLocks = StreamLocks(this)
         decoder = H264Decoder(
             onNeedKeyframe = {
@@ -259,9 +271,11 @@ class MainActivity : ComponentActivity() {
             installId = app.installId,
             onState = { next ->
                 streamLocks.setActive(next.connected)
-                // A Mac we streamed from once connects by itself from then on.
-                if (next.streaming && ::server.isInitialized && server.isReverseSession) {
-                    currentMacKey?.let { rememberMac(it) }
+                if (next.connected) runOnUiThread { launchAutoConnect.cancel() }
+                if (next.streaming && ::server.isInitialized) {
+                    server.connectedMac?.let { mac ->
+                        rememberMac(server.reverseMac ?: nearbyMacs.value.firstOrNull { it.host == mac.host } ?: mac)
+                    }
                 }
                 uiState.value = next.copy(
                     deviceSummary = next.deviceSummary.ifEmpty { deviceInfo.summaryLine() },
@@ -314,8 +328,8 @@ class MainActivity : ComponentActivity() {
             },
             onClipboardImage = ::receiveClipboardImage,
             onMode = controls::setMirror,
-            pairToken = { if (server.isReverseSession) pairTokens.tokenFor(currentMacKey) else null },
-            onPairToken = { token -> pairTokens.save(currentMacKey, token) },
+            pairToken = { pairTokens.tokenFor(server.reverseMac?.name) },
+            onPairToken = { token -> pairTokens.save(server.reverseMac?.name, token) },
         )
         touchMapper = TouchMapper(this, server, controls, onHaptic = ::haptic, palm = palmGuard) { viewport ->
             latestViewport = viewport
@@ -336,11 +350,8 @@ class MainActivity : ComponentActivity() {
             this,
             onHost = { host, port, name ->
                 runOnUiThread {
-                    if (quitting || !::server.isInitialized) return@runOnUiThread
+                    if (receiverStopped || !::server.isInitialized) return@runOnUiThread
                     nearbyMacs.value = nearbyMacs.value.withMac(NearbyMac(name, host, port))
-                    // A Mac this device already streamed from connects by itself;
-                    // a new one waits for a tap on its card.
-                    if (name in knownMacs()) dialMac(name, host, port, userInitiated = false)
                 }
             },
             onLost = { name -> runOnUiThread { nearbyMacs.value = nearbyMacs.value.withoutMac(name) } },
@@ -355,6 +366,7 @@ class MainActivity : ComponentActivity() {
         applyConnectionMode(connectionMode)
         ReceiverForegroundService.start(this)
         app.updates.check(manual = false)
+        launchAutoConnect.schedule(autoConnectEnabled.value)
 
         setContent {
             OpenDisplayTheme {
@@ -380,7 +392,9 @@ class MainActivity : ComponentActivity() {
                     if (caps.isNotEmpty()) touchMapper.resendViewport()
                 }
                 // Keep the last frame up while the Mac rebuilds the display.
-                val showStream = rememberStreamPresence(state.streaming)
+                val returning by returningToMain.collectAsState()
+                val autoConnect by autoConnectEnabled.collectAsState()
+                val showStream = rememberStreamPresence(state.streaming, sessionEnded = state.sessionEnded) && !returning
                 var hint by remember { mutableStateOf(!prefs.getBoolean(KEY_HINT_SEEN, false)) }
                 LaunchedEffect(controlsUi.dim, showStream) {
                     applyDim(controlsUi.dim && showStream)
@@ -441,14 +455,15 @@ class MainActivity : ComponentActivity() {
                             },
                             onExpanded = controls::setExpanded,
                             onHaptic = ::haptic,
-                            onQuit = ::quit,
+                            onDisconnect = ::returnToMain,
                         )
                     },
                     onConnectionMode = { mode -> setConnectionMode(mode) },
                     onConnectMac = ::connectToMac,
                     nearbyMacs = nearby,
                     onConnectNearby = ::connectToNearby,
-                    onQuit = ::quit,
+                    autoConnectEnabled = autoConnect,
+                    onAutoConnect = ::setAutoConnect,
                     lastMacAddress = prefs.getString(KEY_MAC_ADDRESS, "").orEmpty(),
                     createKeyboardView = { context ->
                         KeyboardCaptureView(context, textForwarder, ::forwardSoftKey)
@@ -478,7 +493,7 @@ class MainActivity : ComponentActivity() {
                     onSurfaceDestroyed = {
                         // Keep decoding into an off-screen surface so the Mac
                         // session survives home / recents (foreground service).
-                        if (!quitting && !receiverStopped) attachHoldSurface()
+                        if (!returningToMain.value && !receiverStopped) attachHoldSurface()
                         videoSurface?.release()
                         videoSurface = null
                     },
@@ -497,7 +512,6 @@ class MainActivity : ComponentActivity() {
                     // Do NOT announce sleeping on ON_STOP — the foreground
                     // service keeps the TCP session for a real second-monitor.
                     Lifecycle.Event.ON_START -> {
-                        if (quitting) return@LifecycleEventObserver
                         clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                         clipboard?.addPrimaryClipChangedListener(clipListener)
                         // Always listen on :9000 and re-advertise when visible —
@@ -534,26 +548,32 @@ class MainActivity : ComponentActivity() {
     private fun connectToNearby(mac: NearbyMac) = dialMac(mac.name, mac.host, mac.port)
 
     private fun dialMac(key: String, host: String, port: Int, userInitiated: Boolean = true) {
-        if (quitting) return
-        currentMacKey = key
+        if (returningToMain.value || receiverStopped) return
+        if (userInitiated) launchAutoConnect.cancel()
         server.connectOutbound(host, port, key, userInitiated)
     }
 
-    /** Leave receiver duty explicitly; Home continues to keep the display alive. */
-    private fun quit() {
-        if (quitting) return
-        quitting = true
+    /** End the display session and return to the connection page. */
+    private fun returnToMain() {
+        if (returningToMain.value) return
+        returningToMain.value = true
+        launchAutoConnect.cancel()
         keyboardView?.hideKeyboard()
         controls.endSession()
-        stopAdvertising()
+        touchMapper.resetViewport()
         lifecycleScope.launch {
             try {
-                server.announceClosingAndStop()
+                server.disconnectSession()
             } finally {
-                stopReceiver()
-                finishAndRemoveTask()
+                returningToMain.value = false
             }
         }
+    }
+
+    private fun setAutoConnect(enabled: Boolean) {
+        autoConnectEnabled.value = enabled
+        prefs.edit().putBoolean(KEY_AUTO_CONNECT, enabled).apply()
+        if (!enabled) launchAutoConnect.cancel()
     }
 
     private fun stopAdvertising() {
@@ -565,6 +585,7 @@ class MainActivity : ComponentActivity() {
     private fun stopReceiver() {
         if (receiverStopped) return
         receiverStopped = true
+        launchAutoConnect.cancel()
         stopAdvertising()
         macHostBrowser = null
         server.stop()
@@ -578,11 +599,21 @@ class MainActivity : ComponentActivity() {
         videoSurface = null
     }
 
-    private fun knownMacs(): Set<String> = prefs.getStringSet(KEY_KNOWN_MACS, emptySet()).orEmpty()
+    private fun readLastMac(): NearbyMac? {
+        val name = prefs.getString(KEY_LAST_MAC_NAME, null) ?: return null
+        val host = prefs.getString(KEY_LAST_MAC_HOST, null) ?: return null
+        val port = prefs.getInt(KEY_LAST_MAC_PORT, WireProtocol.MAC_REVERSE_PORT)
+        return if (name.isNotBlank() && host.isNotBlank() && port in 1..65535) NearbyMac(name, host, port) else null
+    }
 
-    private fun rememberMac(key: String) {
-        if (key in knownMacs()) return
-        prefs.edit().putStringSet(KEY_KNOWN_MACS, knownMacs() + key).apply()
+    private fun rememberMac(mac: NearbyMac) {
+        if (lastMac == mac) return
+        lastMac = mac
+        prefs.edit()
+            .putString(KEY_LAST_MAC_NAME, mac.name)
+            .putString(KEY_LAST_MAC_HOST, mac.host)
+            .putInt(KEY_LAST_MAC_PORT, mac.port)
+            .apply()
     }
 
     private fun setConnectionMode(mode: ConnectionMode) {
@@ -606,7 +637,7 @@ class MainActivity : ComponentActivity() {
 
     /** Start (or keep) :9000 TCP + UDP probe + mDNS so Network and USB both work. */
     private fun ensureListeningAndAdvertising() {
-        if (quitting || receiverStopped || !::server.isInitialized) return
+        if (receiverStopped || !::server.isInitialized) return
         // start() is a no-op if already running — never stop for mode switches.
         server.start(WireProtocol.DEFAULT_PORT)
         if (::discoveryProbe.isInitialized) {
@@ -819,7 +850,10 @@ private const val KEY_SIDEBAR_RIGHT = "sidebarRight"
 private const val KEY_HINT_SEEN = "streamHintSeen"
 private const val KEY_MAC_ADDRESS = "macAddress"
 private const val KEY_PALM_REJECT = "palmReject"
-private const val KEY_KNOWN_MACS = "knownMacs"
+private const val KEY_AUTO_CONNECT = "autoConnectLastMac"
+private const val KEY_LAST_MAC_NAME = "lastMacName"
+private const val KEY_LAST_MAC_HOST = "lastMacHost"
+private const val KEY_LAST_MAC_PORT = "lastMacPort"
 private const val HINT_MS = 6_000L
 
 @Composable
@@ -837,7 +871,8 @@ private fun ReceiverScreen(
     lastMacAddress: String,
     nearbyMacs: List<NearbyMac>,
     onConnectNearby: (NearbyMac) -> Unit,
-    onQuit: () -> Unit,
+    autoConnectEnabled: Boolean,
+    onAutoConnect: (Boolean) -> Unit,
     createKeyboardView: (Context) -> View,
     onBindViews: (TextureView?, CursorOverlayView?) -> Unit,
     onSurfaceReady: (Surface) -> Unit,
@@ -847,7 +882,7 @@ private fun ReceiverScreen(
     onPanelMetrics: (widthPx: Int, heightPx: Int, scale: Double) -> Unit,
 ) {
     val activity = LocalContext.current as? MainActivity
-    val streaming by rememberUpdatedState(state.streaming)
+    val streaming by rememberUpdatedState(state.streaming && showStream)
     DisposableEffect(showStream) {
         activity?.setImmersiveMode(showStream)
         onDispose { }
@@ -957,7 +992,8 @@ private fun ReceiverScreen(
             ConnectionScreen(
                 state, onConnectionMode, updates, onConnectMac, lastMacAddress,
                 nearbyMacs, onConnectNearby,
-                onQuit = onQuit,
+                autoConnectEnabled = autoConnectEnabled,
+                onAutoConnect = onAutoConnect,
             )
         }
     }

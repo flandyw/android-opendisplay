@@ -39,7 +39,6 @@ import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -78,6 +77,8 @@ data class ReceiverUiState(
     /** Network (default) or USB cable path. */
     val connectionMode: String = "NETWORK",
     val problem: ReceiverProblem? = null,
+    /** Explicit disconnect bypasses the grace period used for temporary stream loss. */
+    val sessionEnded: Boolean = false,
 )
 
 /**
@@ -148,7 +149,9 @@ class ReceiverServer(
     @Volatile private var lastOutbound: ReverseTarget? = null
     private val reverseReconnect = ReverseReconnectPolicy()
     private var reconnectJob: Job? = null
-    private val dialing = AtomicBoolean(false)
+    private var dialJob: Job? = null
+    private val dialGeneration = AtomicLong(0)
+    @Volatile private var disconnecting = false
 
     // Clock sync (lowest-RTT sample, same as iOS PhoneReceiver).
     private val offsetSamples = ArrayList<Pair<Double, Double>>(16) // rtt → offset
@@ -171,6 +174,10 @@ class ReceiverServer(
 
     /** True while the session is one this device opened to a Mac (reverse connect). */
     val isReverseSession: Boolean get() = lastOutbound != null
+    val reverseMac: NearbyMac? get() = lastOutbound?.let { NearbyMac(it.name, it.host, it.port) }
+    val connectedMac: NearbyMac? get() = reverseMac ?: clientSocket.get()?.inetAddress
+        ?.takeUnless { it.isLoopbackAddress }
+        ?.hostAddress?.let { NearbyMac(it, it, WireProtocol.MAC_REVERSE_PORT) }
 
     fun updatePanel(info: PanelInfo) {
         val changed = panel != info
@@ -209,8 +216,9 @@ class ReceiverServer(
      * Must bind the socket to the **Wi‑Fi Network** — with USB/adb attached,
      * Android often returns EACCES for unbound LAN dials (`from /::`).
      */
+    @Synchronized
     fun connectOutbound(host: String, port: Int, name: String = "$host:$port", userInitiated: Boolean = true) {
-        if (!running) return
+        if (!running || disconnecting) return
         if (!reverseReconnect.allow(name, host, port, userInitiated)) return
         // If already connected only via adb loopback (127.0.0.1), allow reverse
         // to take over so Wi‑Fi path can be tested while the cable is plugged
@@ -226,17 +234,12 @@ class ReceiverServer(
         if (state.connected && (existingPeer == "127.0.0.1" || existingPeer == "::1")) {
             Log.i(tag, "connectOutbound replacing adb/loopback session with reverse $host:$port")
         }
-        if (!dialing.compareAndSet(false, true)) return
-        scope.launch {
-            try {
-                dial(ReverseTarget(name, host, port))
-            } finally {
-                dialing.set(false)
-            }
-        }
+        if (dialJob?.isActive == true) return
+        val generation = dialGeneration.incrementAndGet()
+        dialJob = scope.launch { dial(ReverseTarget(name, host, port), generation) }
     }
 
-    private suspend fun dial(target: ReverseTarget) {
+    private suspend fun dial(target: ReverseTarget, generation: Long) {
         val (name, host, port) = target
         // Prefer loopback first (adb reverse); then LAN IP for pure Wi‑Fi.
         val candidates = linkedSetOf<String>()
@@ -246,12 +249,14 @@ class ReceiverServer(
         candidates.add(host)
         var lastError: Exception? = null
         for (candidate in candidates) {
-            if (!running || !reverseReconnect.allow(name, host, port, userInitiated = false)) return
+            if (!running || disconnecting || generation != dialGeneration.get() ||
+                !reverseReconnect.allow(name, host, port, userInitiated = false)) return
             try {
                 Log.i(tag, "dialing Mac $candidate:$port (reverse)")
-                publish(state.copy(status = "Connecting to Mac $candidate:$port…", connected = false, problem = null))
+                publish(state.copy(status = "Connecting to Mac $candidate:$port…", connected = false, problem = null, sessionEnded = false))
                 val socket = openWifiBoundSocket(candidate, port)
-                if (!running || !reverseReconnect.allow(name, host, port, userInitiated = false)) {
+                if (!running || disconnecting || generation != dialGeneration.get() ||
+                    !reverseReconnect.allow(name, host, port, userInitiated = false)) {
                     socket.close()
                     return
                 }
@@ -266,6 +271,7 @@ class ReceiverServer(
                 Log.w(tag, "connectOutbound $candidate:$port failed: ${e.message}")
             }
         }
+        if (!running || disconnecting || generation != dialGeneration.get()) return
         publish(
             state.copy(
                 status = "Mac unreachable — ${lastError?.message ?: "no route"}",
@@ -353,6 +359,8 @@ class ReceiverServer(
     fun stop() {
         if (!scope.isActive) return
         running = false
+        dialGeneration.incrementAndGet()
+        dialJob?.cancel()
         lastOutbound = null
         reconnectJob?.cancel()
         acceptJob?.cancel()
@@ -498,14 +506,17 @@ class ReceiverServer(
         }
     }
 
-    /** Flush the quit message before releasing the socket and canceling our IO scope. */
-    suspend fun announceClosingAndStop() = withContext(Dispatchers.IO) {
-        running = false
+    /** End this session while keeping the receiver, discovery and app available. */
+    suspend fun disconnectSession() = withContext(Dispatchers.IO) {
+        disconnecting = true
+        dialGeneration.incrementAndGet()
+        dialJob?.cancel()
+        lastOutbound?.let { reverseReconnect.pause(it.name, it.host, it.port) }
         lastOutbound = null
         reconnectJob?.cancel()
-        acceptJob?.cancel()
-        try { serverSocket?.close() } catch (_: Exception) { }
+        publish(state.copy(connected = false, streaming = false, sessionEnded = true, status = "Waiting for Mac…", problem = null))
         val socket = clientSocket.get()
+        val session = sessionJob
         // Closing the socket also unblocks a stalled write; coroutine timeout
         // alone cannot interrupt a blocking Socket output stream.
         val deadline = launch {
@@ -516,7 +527,13 @@ class ReceiverServer(
             sendJson(JSONObject().put("type", WireMessage.CLOSING))
         } finally {
             deadline.cancel()
-            stop()
+            closeClient("user disconnected")
+            try {
+                session?.join()
+                publish(state.copy(connected = false, streaming = false, sessionEnded = true, status = "Waiting for Mac…", problem = null))
+            } finally {
+                disconnecting = false
+            }
         }
     }
 
@@ -578,9 +595,10 @@ class ReceiverServer(
                         if (!running) break
                         throw e
                     }
-                    if (!running) {
+                    if (!running || disconnecting) {
                         socket.close()
-                        break
+                        if (!running) break
+                        continue
                     }
                     // Single client: the newest dial wins. (Do not "sticky-reject"
                     // extras — if the Mac has already abandoned the old socket,
@@ -595,6 +613,8 @@ class ReceiverServer(
                     } catch (_: Exception) {
                     }
                     clientSocket.set(socket)
+                    dialGeneration.incrementAndGet()
+                    dialJob?.cancel()
                     lastOutbound = null
                     reconnectJob?.cancel()
                     sessionJob = scope.launch { runSession(socket) }
@@ -624,6 +644,7 @@ class ReceiverServer(
                 problem = null,
                 connected = true,
                 streaming = false,
+                sessionEnded = false,
             ),
         )
         Log.i(tag, "session from ${socket.inetAddress?.hostAddress}")
@@ -755,6 +776,9 @@ class ReceiverServer(
                     lastOutbound?.let { reverseReconnect.pause(it.name, it.host, it.port) }
                     lastOutbound = null
                     reconnectJob?.cancel()
+                    dialGeneration.incrementAndGet()
+                    dialJob?.cancel()
+                    publish(state.copy(connected = false, streaming = false, sessionEnded = true))
                     closeClient("Mac user disconnected")
                 }
                 WireMessage.PONG -> {

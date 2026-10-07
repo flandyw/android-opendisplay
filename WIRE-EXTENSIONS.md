@@ -24,10 +24,17 @@ auto-connect for that Mac until the user taps Connect again or reopens the
 Android app. A transport failure or Mac-side display rebuild still reconnects
 automatically. This message is additive; older receivers ignore it.
 
-Android **Quit** sends `{"type":"closing"}` before closing the connection,
-withdraws discovery, stops listening and streaming, stops its foreground
-service, and removes the activity from Recents. Home still keeps the session
-alive in the background.
+Android **Disconnect** sends `{"type":"closing"}` before closing only the
+current session and returning immediately to the main connection page. The
+receiver keeps listening and discovering Macs, and the app remains open.
+Both sides suppress automatic reconnection of the ended session. Home still
+keeps an active display session alive in the background.
+
+Android launch auto-connect is off by default. The main page's
+**Auto-connect to last device** toggle persists the user's choice; when
+enabled, it waits three seconds and dials the last Mac that successfully
+streamed. A manual connection, disconnect, or turning the toggle off cancels
+the pending launch dial. Discovery alone never initiates connections.
 
 ## hello additions
 

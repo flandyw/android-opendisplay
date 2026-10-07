@@ -18,15 +18,17 @@ internal const val RECONNECT_GRACE_MS = 5_000L
 
 /** True while streaming, and for [graceMs] after a stream that was up has dropped. */
 @Composable
-internal fun rememberStreamPresence(streaming: Boolean, graceMs: Long = RECONNECT_GRACE_MS): Boolean {
+internal fun rememberStreamPresence(streaming: Boolean, graceMs: Long = RECONNECT_GRACE_MS, sessionEnded: Boolean = false): Boolean {
     var held by remember { mutableStateOf(false) }
-    LaunchedEffect(streaming) {
-        if (streaming) {
+    LaunchedEffect(streaming, sessionEnded) {
+        if (sessionEnded) {
+            held = false
+        } else if (streaming) {
             held = true
         } else if (held) {
             delay(graceMs)
             held = false
         }
     }
-    return streaming || held
+    return !sessionEnded && (streaming || held)
 }

@@ -120,7 +120,7 @@ fun SidebarOverlay(
     onRightSide: (Boolean) -> Unit,
     onExpanded: (Boolean) -> Unit,
     onHaptic: () -> Unit,
-    onQuit: () -> Unit,
+    onDisconnect: () -> Unit,
 ) {
     val scroll = rememberScrollState()
     var moreOpen by remember { mutableStateOf(false) }
@@ -252,11 +252,11 @@ fun SidebarOverlay(
                         }
                     }
                     TextButton(
-                        onClick = onQuit,
+                        onClick = onDisconnect,
                         contentPadding = PaddingValues(0.dp),
                         modifier = Modifier.width(48.dp).heightIn(min = 48.dp),
                     ) {
-                        Text(stringResource(R.string.quit_app), color = GlyphColor, fontSize = 12.sp)
+                        Text(stringResource(R.string.disconnect_session), color = GlyphColor, fontSize = 12.sp)
                     }
                 }
             }

@@ -64,5 +64,7 @@
     <string name="sidebar_state_off">Off</string>
     <string name="stream_reconnecting">Reconnecting…</string>
     <string name="stream_hint">Tap the tab for shortcuts. Hold the hide sidebar button for more controls. Three fingers: swipe to undo or redo.</string>
-    <string name="quit_app">Quit</string>
+    <string name="disconnect_session">Disconnect</string>
+    <string name="auto_connect_last_device">Auto-connect to last device</string>
+    <string name="auto_connect_delay">On launch, connect after 3 seconds.</string>
 </resources>

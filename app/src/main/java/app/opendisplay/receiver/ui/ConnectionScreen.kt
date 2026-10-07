@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -68,6 +69,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.ToggleButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -118,7 +120,8 @@ fun ConnectionScreen(
     /** Macs found on the network; each is one tap to connect. */
     nearbyMacs: List<NearbyMac> = emptyList(),
     onConnectNearby: (NearbyMac) -> Unit = {},
-    onQuit: (() -> Unit)? = null,
+    autoConnectEnabled: Boolean = false,
+    onAutoConnect: ((Boolean) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val mode = ConnectionMode.entries.firstOrNull { it.name == state.connectionMode }
@@ -156,9 +159,6 @@ fun ConnectionScreen(
                     }
                 },
                 actions = {
-                    if (onQuit != null) {
-                        TextButton(onClick = onQuit) { Text(stringResource(R.string.quit_app)) }
-                    }
                     FilledTonalIconButton(onClick = { sheet = ConnectionSheet.HELP }, modifier = Modifier.padding(end = 12.dp)) {
                         Symbol(R.drawable.ic_help, description = stringResource(R.string.connection_help))
                     }
@@ -184,6 +184,23 @@ fun ConnectionScreen(
                         nearbyMacs, onConnectNearby, { askingMac = true },
                         Modifier.widthIn(max = if (wide) 1120.dp else 560.dp).fillMaxWidth(),
                     )
+                    Spacer(Modifier.height(spacing))
+                }
+                if (onAutoConnect != null) {
+                    Row(
+                        modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth()
+                            .toggleable(autoConnectEnabled, role = Role.Switch, onValueChange = onAutoConnect)
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(stringResource(R.string.auto_connect_last_device), style = MaterialTheme.typography.titleSmall)
+                            Text(stringResource(R.string.auto_connect_delay), style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = autoConnectEnabled, onCheckedChange = null)
+                    }
                     Spacer(Modifier.height(spacing))
                 }
                 if (wide) {

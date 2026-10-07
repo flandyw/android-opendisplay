@@ -946,12 +946,12 @@ final class SenderController: ObservableObject {
             self.mode = requested
         }
         sender.onPeerClosed = { [weak self, weak session] in
-            // The receiver app quit — a deliberate goodbye, so no reconnect
-            // waits around. Reopening the app is a fresh start handled by
-            // the normal discovery/auto-connect paths.
+            // The receiver deliberately left this session (Disconnect or
+            // app exit). Opt it out of our auto-connect too: a receiver that
+            // stays on its main page still advertises its Bonjour service.
             guard let self, let session else { return }
             Log.info("session \(session.id) closed by the receiver — ending")
-            self.end(session)
+            self.disconnect(session)
         }
         sessions.append(session)
         if incoming != nil, requireApproval {
