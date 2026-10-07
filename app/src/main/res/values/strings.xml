@@ -36,6 +36,7 @@
     <string name="updates_download_newer">Download newer update</string>
     <!-- In-stream sidebar (accessibility labels) -->
     <string name="sidebar_open">Show sidebar</string>
+    <string name="sidebar_more">More</string>
     <string name="sidebar_close">Hide sidebar</string>
     <string name="sidebar_mod_cmd">Command</string>
     <string name="sidebar_mod_opt">Option</string>
@@ -45,10 +46,6 @@
     <string name="sidebar_mod_locked">Locked on</string>
     <string name="sidebar_escape">Escape</string>
     <string name="sidebar_undo">Undo</string>
-    <string name="sidebar_redo">Redo</string>
-    <string name="sidebar_copy">Copy</string>
-    <string name="sidebar_paste">Paste</string>
-    <string name="sidebar_app_switcher">Switch app</string>
     <string name="sidebar_mission_control">Mission Control</string>
     <string name="sidebar_spotlight">Spotlight</string>
     <string name="sidebar_dock">Show or hide the Dock</string>

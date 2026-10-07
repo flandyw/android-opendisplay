@@ -32,11 +32,12 @@
     <string name="connection_usb_step_body">Enable USB debugging on this device and allow your Mac when prompted.</string>
     <string name="connection_usb_mac_step_body">Choose Android USB, then start Extend or Mirror.</string>
     <string name="connection_choose_device">YOUR DEVICE</string>
-    <string name="connection_manual">Connect with an address</string>
+    <string name="connection_manual">Show this device’s address</string>
     <string name="connection_usb_help">USB setup help</string>
     <string name="connection_nearby_title">Macs nearby</string>
+    <string name="connection_nearby_empty">Looking for your Mac on this network. Open OpenDisplay on your Mac and it will appear here.</string>
     <string name="connection_nearby_body">Tap your Mac to connect. The first time, your Mac asks you to allow this device.</string>
-    <string name="connection_mac_button">Connect to a Mac by address</string>
+    <string name="connection_mac_button">Enter your Mac’s address</string>
     <string name="connection_mac_title">Connect to a Mac</string>
     <string name="connection_mac_body">Use this when your Mac can’t reach this device, for example on guest Wi-Fi. In OpenDisplay on the Mac, turn on “Let Android devices connect to this Mac”, then enter its address here.</string>
     <string name="connection_mac_label">Mac address</string>
@@ -48,7 +49,7 @@
     <string name="connection_vpn_settings">Open VPN settings</string>
     <string name="connection_system_settings">Open settings</string>
     <string name="connection_settings_unavailable">Settings couldn’t be opened. Open your device settings to continue.</string>
-    <string name="connection_manual_title">Connect with an address</string>
+    <string name="connection_manual_title">This device’s address</string>
     <string name="connection_manual_body">In OpenDisplay on your Mac, choose Connect over network and enter an address below.</string>
     <string name="connection_copy_address">Copy address %1$s</string>
     <string name="connection_address_copied">Address copied</string>

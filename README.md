@@ -27,7 +27,7 @@ optional.
 - Material 3 Expressive controls, emphasized typography, and spring motion
 - System light/dark themes and wallpaper colors on Android 12+
 - Adaptive phone/tablet connection screen with a two-step Wi-Fi or USB guide
-- **Connect with an address** opens copyable network addresses; **Help** opens
+- **Show this device’s address** opens copyable network addresses; **Help** opens
   expandable network, VPN, USB, touch, and device information
 - The Mac desktop takes over automatically when streaming starts
 
@@ -57,7 +57,7 @@ on those networks.
 - Touch click / drag / two-finger scroll; pinch-zoom (the Mac crops its capture to the zoomed area, so zoom shows real detail)
 - Stylus: pen always acts as a pointer (pressure, tilt, barrel button sent as optional `touch` fields; palm rejection while the pen is down). Pressure/tilt need Mac-app support; older Macs treat it as a plain click/drag.
 - Sidecar-style gestures: 3-finger swipe = undo/redo, pinch = copy/paste; 4-finger swipe = Mission Control / Spaces; two-finger tap = right-click
-- Sidebar (tab on either screen edge — tap or drag it open; it tucks itself away after a few idle seconds and scrolls on short screens): sticky ⌘ ⌥ ⌃ ⇧ (tap = next click only, long-press = lock; a dot on the tab shows one is armed), Esc, undo/redo, copy/paste, app switcher, Mission Control, Spotlight, Dock toggle, on-screen keyboard, pen-only mode (fingers scroll), mirror/extend, one-tap zoom reset, stats HUD, dim screen (panel to minimum brightness, stream keeps running), and a switch to dock the sidebar left or right
+- Sidebar (tab on either screen edge — tap or drag it open). Open, it takes its own strip of the screen and the picture scales down beside it instead of being covered. It keeps to what matters: sticky ⌘ ⌥ ⌃ ⇧ (tap = next click only, long-press = lock; a dot on the tab shows one is armed), Esc, Undo, the on-screen keyboard, pen-only mode (fingers scroll), a one-tap zoom reset while zoomed, and a **More** menu with Mission Control, Spotlight, Dock, mirror/extend, stats, dim screen and which edge the sidebar docks to. Redo, copy and paste are gestures (3-finger swipe/pinch)
 - On-screen keyboard types into the Mac (autocorrect off, so the Mac sees what you typed); sticky modifiers combine with it (⌘ then `c` = copy). Needs Mac-app `key` support
 - Hardware keyboard keys include the numeric keypad
 - Hardware keyboard, mouse/trackpad (hover, right-click, wheel) and clipboard sync (text, and images up to ~600 KB; turn on "Sync clipboard" in the Mac app)
@@ -116,7 +116,7 @@ devices, OEM builds and ROMs are welcome — run the
 1. **compileSdk 36 / targetSdk 35 / minSdk 26** — the floor is Android 8.0; we still version-guard platform APIs.
 2. **Decode** — `KEY_LOW_LATENCY` on API 30+; vendor keys with plain MediaCodec fallback.
 3. **Network** — cleartext TCP on LAN (`network_security_config`); classic listen `:9000` plus reverse dial to Mac `:9011`.
-4. **Discovery is optional** — **Connect with an address** shows **IP:port** when mDNS is blocked.
+4. **Discovery is optional** — **Show this device’s address** shows **IP:port** when mDNS is blocked.
 5. **Startup probe** — logs API level, ABI, AVC decoder (`adb logcat -s DeviceReport H264Decoder`).
 6. **CI** — unit tests + debug APK assemble (see `.github/workflows/android.yml`).
 7. **Manual smoke** — [checklist](#smoke-checklist) on a real device before release.
@@ -147,8 +147,8 @@ The tablet lists Macs it finds on the network under **Macs nearby**; tap one to
 connect. The first time, the Mac asks you to allow this device (**Always Allow**,
 **Allow Once** or **Don't Allow**). After Always Allow the tablet holds a
 private pairing token and that Mac connects by itself from then on, with no
-prompts. Where mDNS is blocked too (guest Wi‑Fi), tap **Connect to a Mac by
-address** and enter the Mac's IP (`192.168.1.20`, or `host:port`); the address
+prompts. Where mDNS is blocked too (guest Wi‑Fi), use **Enter your Mac’s
+address** in the Macs nearby card and enter the Mac's IP (`192.168.1.20`, or `host:port`); the address
 is remembered and re-dialed with backoff if the link drops. On the Mac,
 **Let Android devices find this Mac** is on by default and can be turned off.
 The token travels unencrypted like the rest of the protocol, so it keeps out
@@ -199,7 +199,7 @@ Grant Mac **Screen Recording** + **Accessibility** if prompted.
 Run on the Android device/ROM you plan to support (reference device: Pixel
 Tablet on GrapheneOS):
 
-- [ ] App launches; connection screen shows the advertised device name; **Connect with an address** shows a LAN IP and port **9000** when available.
+- [ ] App launches; connection screen shows the advertised device name; **Show this device’s address** shows a LAN IP and port **9000** when available.
 - [ ] Switch Wi-Fi / USB; open Help and copy an address. Check portrait, landscape, light/dark mode, and enlarged text.
 - [ ] `adb logcat -s DeviceReport` shows **H.264 decoder: …** (not MISSING).
 - [ ] Mac connects (discovery, reverse, **or** manual IP / USB).

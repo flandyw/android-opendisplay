@@ -174,8 +174,12 @@ fun ConnectionScreen(
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (nearbyMacs.isNotEmpty() && !state.connected) {
-                    NearbyMacs(nearbyMacs, onConnectNearby, Modifier.widthIn(max = if (wide) 1120.dp else 560.dp).fillMaxWidth())
+                // Always present while idle so people can see this device is looking for Macs.
+                if (onConnectMac != null && !state.connected && stage != ConnectionStage.CONNECTING) {
+                    NearbyMacs(
+                        nearbyMacs, onConnectNearby, { askingMac = true },
+                        Modifier.widthIn(max = if (wide) 1120.dp else 560.dp).fillMaxWidth(),
+                    )
                     Spacer(Modifier.height(spacing))
                 }
                 if (wide) {
@@ -192,11 +196,6 @@ fun ConnectionScreen(
                 Spacer(Modifier.height(16.dp))
                 TextButton(onClick = { sheet = ConnectionSheet.HELP }) {
                     Text(stringResource(R.string.connection_trouble))
-                }
-                if (onConnectMac != null) {
-                    TextButton(onClick = { askingMac = true }) {
-                        Text(stringResource(R.string.connection_mac_button))
-                    }
                 }
                 if (updates != null) {
                     TextButton(onClick = { sheet = ConnectionSheet.UPDATES }) {
@@ -261,19 +260,28 @@ fun ConnectionScreen(
 
 /** Macs found automatically. The first time, the Mac asks the person to allow this device. */
 @Composable
-private fun NearbyMacs(macs: List<NearbyMac>, onConnect: (NearbyMac) -> Unit, modifier: Modifier = Modifier) {
+private fun NearbyMacs(
+    macs: List<NearbyMac>,
+    onConnect: (NearbyMac) -> Unit,
+    onEnterAddress: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val onColor = MaterialTheme.colorScheme.onTertiaryContainer
     Surface(modifier, shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.tertiaryContainer) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    stringResource(R.string.connection_nearby_title),
+                    Modifier.weight(1f).semantics { heading() },
+                    style = MaterialTheme.typography.titleLarge,
+                    color = onColor,
+                )
+                if (macs.isEmpty()) LoadingIndicator(Modifier.size(32.dp), color = onColor)
+            }
             Text(
-                stringResource(R.string.connection_nearby_title),
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onTertiaryContainer,
-                modifier = Modifier.semantics { heading() },
-            )
-            Text(
-                stringResource(R.string.connection_nearby_body),
+                stringResource(if (macs.isEmpty()) R.string.connection_nearby_empty else R.string.connection_nearby_body),
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                color = onColor,
             )
             macs.forEach { mac ->
                 Row(
@@ -294,6 +302,9 @@ private fun NearbyMacs(macs: List<NearbyMac>, onConnect: (NearbyMac) -> Unit, mo
                         Text(stringResource(R.string.connection_mac_connect))
                     }
                 }
+            }
+            TextButton(onClick = onEnterAddress, modifier = Modifier.align(Alignment.End)) {
+                Text(stringResource(R.string.connection_mac_button))
             }
         }
     }

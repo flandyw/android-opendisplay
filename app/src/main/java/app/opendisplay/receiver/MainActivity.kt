@@ -20,7 +20,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import app.opendisplay.receiver.ui.SidebarWidth
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -382,6 +389,8 @@ class MainActivity : ComponentActivity() {
                 ReceiverScreen(
                     state = state,
                     showStream = showStream,
+                    sidebarOpen = controlsUi.expanded,
+                    sidebarRight = controlsUi.rightSide,
                     showHint = hint && showStream && !controlsUi.expanded,
                     onHintDone = finishHint,
                     updates = updatesUi,
@@ -759,6 +768,8 @@ private fun ReceiverScreen(
     showStream: Boolean,
     showHint: Boolean,
     onHintDone: () -> Unit,
+    sidebarOpen: Boolean,
+    sidebarRight: Boolean,
     updates: UpdatesUi,
     sidebar: @Composable () -> Unit,
     onConnectionMode: (ConnectionMode) -> Unit,
@@ -781,17 +792,31 @@ private fun ReceiverScreen(
         onDispose { }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black),
     ) {
+        // An open sidebar takes its own strip of the screen: the whole picture
+        // scales down to the rest, toward the edge opposite the sidebar. This is
+        // only a visual transform; the view keeps its size, so the Mac is not
+        // told the panel changed and does not rebuild the display.
+        val fit by animateFloatAsState(
+            targetValue = if (sidebarOpen && showStream) (maxWidth - SidebarWidth) / maxWidth else 1f,
+            animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+            label = "sidebar fit",
+        )
         // Keep the surface alive while idle so reconnect does not drop the
         // first keyframe. Alpha 0 + solid IdleOverlay hide any leftover frame
         // when the Mac stops sharing.
         AndroidView(
             modifier = Modifier
                 .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = fit
+                    scaleY = fit
+                    transformOrigin = TransformOrigin(if (sidebarRight) 0f else 1f, 0.5f)
+                }
                 .then(
                     if (showStream) Modifier else Modifier.alpha(0f),
                 ),

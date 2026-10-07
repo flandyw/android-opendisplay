@@ -31,6 +31,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -67,7 +69,6 @@ import app.opendisplay.receiver.R
 import app.opendisplay.receiver.input.ControlsUi
 import app.opendisplay.receiver.input.MacKeys
 import app.opendisplay.receiver.input.Mods
-import kotlinx.coroutines.delay
 
 private val PanelColor = Color(0xE61C1C1E)
 private val PanelBorder = Color(0x26FFFFFF)
@@ -76,17 +77,20 @@ private val LockedColor = Color(0xFF30B0C7)
 private val IdleColor = Color(0x33FFFFFF)
 private val GlyphColor = Color(0xFFFFFFFF)
 
-/** The panel tucks itself away this long after the last touch. */
-private const val AUTO_HIDE_MS = 8_000L
-
 /** A drag this far toward the screen centre pulls the tab open. */
 private const val TAB_DRAG_OPEN_DP = 10
 
 /**
- * Sidecar-style sidebar: sticky Cmd/Opt/Ctrl/Shift, Esc, undo/redo, the system
- * keyboard, plus pen-only, mirror/extend and HUD toggles. Collapsed to a thin
- * tab so it never covers the picture; it opens with a tap or a drag, closes on
- * its own after a few idle seconds, and can dock to either edge.
+ * Screen width the open sidebar occupies. The picture is scaled down by this
+ * much so the panel sits beside it instead of covering it.
+ */
+val SidebarWidth = 72.dp
+
+/**
+ * Sidecar-style sidebar, kept short: sticky Cmd/Opt/Ctrl/Shift, Esc, Undo, the
+ * keyboard and pen-only mode, and a "more" menu for the rest. While open it
+ * takes its own strip of the screen (see [SidebarWidth]); collapsed it is a
+ * thin tab. It can dock to either edge.
  *
  * Modifiers and shortcuts need the Mac to support `key` ([keyEnabled]); the
  * mirror toggle needs `mode` ([modeEnabled]).
@@ -111,17 +115,8 @@ fun SidebarOverlay(
     onHaptic: () -> Unit,
 ) {
     val scroll = rememberScrollState()
-    // Every touch on the panel restarts the idle countdown.
-    var activity by remember { mutableIntStateOf(0) }
-    val touch = rememberUpdatedState({ activity++; onHaptic() })
-    val haptic = { touch.value() }
-
-    LaunchedEffect(ui.expanded, activity, scroll.value) {
-        if (ui.expanded) {
-            delay(AUTO_HIDE_MS)
-            onExpanded(false)
-        }
-    }
+    var moreOpen by remember { mutableStateOf(false) }
+    val haptic = onHaptic
 
     val right = ui.rightSide
     val motion = MaterialTheme.motionScheme
@@ -187,23 +182,6 @@ fun SidebarOverlay(
                     Divider()
                     TextKey("esc", R.string.sidebar_escape, haptic) { onShortcut(MacKeys.ESCAPE, 0) }
                     TextKey("⌘Z", R.string.sidebar_undo, haptic) { onShortcut(MacKeys.Z, Mods.CMD) }
-                    TextKey("⇧⌘Z", R.string.sidebar_redo, haptic, textSp = 11) {
-                        onShortcut(MacKeys.Z, Mods.CMD or Mods.SHIFT)
-                    }
-                    TextKey("⌘C", R.string.sidebar_copy, haptic) { onShortcut(MacKeys.C, Mods.CMD) }
-                    TextKey("⌘V", R.string.sidebar_paste, haptic) { onShortcut(MacKeys.V, Mods.CMD) }
-                    Divider()
-                    TextKey("⌘⇥", R.string.sidebar_app_switcher, haptic) { onShortcut(MacKeys.TAB, Mods.CMD) }
-                    IconKey(Glyph.MISSION, R.string.sidebar_mission_control, haptic) {
-                        onShortcut(MacKeys.ARROW_UP, Mods.CTRL)
-                    }
-                    IconKey(Glyph.SPOTLIGHT, R.string.sidebar_spotlight, haptic) {
-                        onShortcut(MacKeys.SPACE, Mods.CMD)
-                    }
-                    TextKey("Dock", R.string.sidebar_dock, haptic, textSp = 11) {
-                        onShortcut(MacKeys.D, Mods.CMD or Mods.OPT)
-                    }
-                    Divider()
                     IconKey(Glyph.KEYBOARD, R.string.sidebar_keyboard, haptic, active = ui.keyboard) {
                         onKeyboard(!ui.keyboard)
                     }
@@ -211,32 +189,46 @@ fun SidebarOverlay(
                 TextKey("Pen", R.string.sidebar_pen_only, haptic, active = ui.penOnly, textSp = 12, toggle = true) {
                     onPenOnly(!ui.penOnly)
                 }
-                if (modeEnabled) {
-                    IconKey(Glyph.MIRROR, R.string.sidebar_mirror, haptic, active = ui.mirror, toggle = true) {
-                        onMirror(!ui.mirror)
-                    }
-                }
                 if (ui.zoomed) {
                     TextKey("1×", R.string.sidebar_zoom_reset, haptic, textSp = 15) { onZoomReset() }
                 }
-                TextKey("HUD", R.string.sidebar_hud, haptic, active = ui.hud, textSp = 11, toggle = true) {
-                    onHud(!ui.hud)
-                }
-                TextKey("Dim", R.string.sidebar_dim, haptic, active = ui.dim, textSp = 12, toggle = true) {
-                    onDim(!ui.dim)
-                }
                 Divider()
-                IconKey(
-                    if (right) Glyph.DOCK_LEFT else Glyph.DOCK_RIGHT,
-                    if (right) R.string.sidebar_move_left else R.string.sidebar_move_right,
-                    haptic,
-                ) { onRightSide(!right) }
+                Box {
+                    IconKey(Glyph.MORE, R.string.sidebar_more, haptic, active = moreOpen) { moreOpen = !moreOpen }
+                    DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
+                        if (keyEnabled) {
+                            MoreItem(R.string.sidebar_mission_control) {
+                                onShortcut(MacKeys.ARROW_UP, Mods.CTRL)
+                            }
+                            MoreItem(R.string.sidebar_spotlight) { onShortcut(MacKeys.SPACE, Mods.CMD) }
+                            MoreItem(R.string.sidebar_dock) { onShortcut(MacKeys.D, Mods.CMD or Mods.OPT) }
+                        }
+                        if (modeEnabled) {
+                            MoreItem(R.string.sidebar_mirror, checked = ui.mirror) { onMirror(!ui.mirror) }
+                        }
+                        MoreItem(R.string.sidebar_hud, checked = ui.hud) { onHud(!ui.hud) }
+                        MoreItem(R.string.sidebar_dim, checked = ui.dim) { onDim(!ui.dim) }
+                        MoreItem(if (right) R.string.sidebar_move_left else R.string.sidebar_move_right) {
+                            onRightSide(!right)
+                        }
+                    }
+                }
                 IconKey(if (right) Glyph.CHEVRON_RIGHT else Glyph.CHEVRON_LEFT, R.string.sidebar_close, haptic) {
+                    moreOpen = false
                     onExpanded(false)
                 }
             }
         }
     }
+}
+
+@Composable
+private fun MoreItem(@androidx.annotation.StringRes label: Int, checked: Boolean? = null, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = { Text(stringResource(label)) },
+        trailingIcon = checked?.let { on -> { if (on) Text("✓") } },
+        onClick = onClick,
+    )
 }
 
 /** The collapsed handle: tap or drag toward the centre to open the panel. */
@@ -420,7 +412,7 @@ private fun PanelButton(
     )
 }
 
-private enum class Glyph { MISSION, SPOTLIGHT, KEYBOARD, MIRROR, DOCK_LEFT, DOCK_RIGHT, CHEVRON_LEFT, CHEVRON_RIGHT }
+private enum class Glyph { KEYBOARD, MORE, CHEVRON_LEFT, CHEVRON_RIGHT }
 
 private enum class Direction { LEFT, RIGHT }
 
@@ -430,21 +422,6 @@ private fun DrawScope.drawGlyph(glyph: Glyph, color: Color) {
     val h = size.height
     val stroke = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
     when (glyph) {
-        Glyph.MISSION -> {
-            // Four windows.
-            val corner = CornerRadius(2.dp.toPx())
-            for (x in listOf(0.08f, 0.54f)) for (y in listOf(0.18f, 0.58f)) {
-                drawRoundRect(
-                    color, Offset(w * x, h * y), Size(w * 0.38f, h * 0.26f),
-                    corner, stroke,
-                )
-            }
-        }
-        Glyph.SPOTLIGHT -> {
-            val r = w * 0.27f
-            drawCircle(color, r, Offset(w * 0.42f, h * 0.42f), style = stroke)
-            drawLine(color, Offset(w * 0.62f, h * 0.62f), Offset(w * 0.9f, h * 0.9f), stroke.width, StrokeCap.Round)
-        }
         Glyph.KEYBOARD -> {
             drawRoundRect(
                 color, Offset(w * 0.04f, h * 0.2f), Size(w * 0.92f, h * 0.6f),
@@ -456,20 +433,8 @@ private fun DrawScope.drawGlyph(glyph: Glyph, color: Color) {
             }
             drawLine(color, Offset(w * 0.3f, h * 0.67f), Offset(w * 0.7f, h * 0.67f), stroke.width, StrokeCap.Round)
         }
-        Glyph.MIRROR -> {
-            // Two overlapping screens showing the same picture.
-            val corner = CornerRadius(2.dp.toPx())
-            drawRoundRect(color, Offset(w * 0.04f, h * 0.14f), Size(w * 0.6f, h * 0.52f), corner, stroke)
-            drawRoundRect(color, Offset(w * 0.36f, h * 0.34f), Size(w * 0.6f, h * 0.52f), corner, stroke)
-        }
-        Glyph.DOCK_LEFT, Glyph.DOCK_RIGHT -> {
-            // A screen with a bar on the edge the panel will move to.
-            drawRoundRect(
-                color, Offset(w * 0.06f, h * 0.16f), Size(w * 0.88f, h * 0.68f),
-                CornerRadius(3.dp.toPx()), stroke,
-            )
-            val barX = if (glyph == Glyph.DOCK_LEFT) 0.2f else 0.8f
-            drawLine(color, Offset(w * barX, h * 0.32f), Offset(w * barX, h * 0.68f), 3.dp.toPx(), StrokeCap.Round)
+        Glyph.MORE -> {
+            for (x in listOf(0.2f, 0.5f, 0.8f)) drawCircle(color, 2.2.dp.toPx(), Offset(w * x, h * 0.5f))
         }
         Glyph.CHEVRON_LEFT -> drawChevron(Direction.LEFT, color)
         Glyph.CHEVRON_RIGHT -> drawChevron(Direction.RIGHT, color)
