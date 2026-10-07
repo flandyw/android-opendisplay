@@ -75,6 +75,12 @@ import app.opendisplay.receiver.input.Mods
 import app.opendisplay.receiver.input.TouchMapper
 import app.opendisplay.receiver.net.DiscoveryProbe
 import app.opendisplay.receiver.net.MacHostBrowser
+import app.opendisplay.receiver.net.MacAddress
+import app.opendisplay.receiver.net.NearbyMac
+import app.opendisplay.receiver.net.PairTokens
+import app.opendisplay.receiver.net.TokenStorage
+import app.opendisplay.receiver.net.withMac
+import app.opendisplay.receiver.net.withoutMac
 import app.opendisplay.receiver.net.NsdAdvertiser
 import app.opendisplay.receiver.net.PanelInfo
 import app.opendisplay.receiver.net.ReceiverServer
@@ -100,6 +106,18 @@ class MainActivity : ComponentActivity() {
     private var macHostBrowser: MacHostBrowser? = null
     private lateinit var touchMapper: TouchMapper
     private val uiState = MutableStateFlow(ReceiverUiState())
+
+    /** Macs on the network that accept reverse connections, shown as one-tap cards. */
+    private val nearbyMacs = MutableStateFlow<List<NearbyMac>>(emptyList())
+    /** What the reverse connection being dialed is filed under (Bonjour name, or typed address). */
+    @Volatile private var currentMacKey: String? = null
+    private val pairTokens by lazy {
+        PairTokens(object : TokenStorage {
+            override fun get(key: String) = prefs.getString(key, null)
+            override fun put(key: String, value: String) { prefs.edit().putString(key, value).apply() }
+            override fun remove(key: String) { prefs.edit().remove(key).apply() }
+        })
+    }
     private var connectionMode: ConnectionMode = ConnectionMode.NETWORK
 
     /** Bound when the video view is inflated; cursor updates post to it. */
@@ -221,6 +239,10 @@ class MainActivity : ComponentActivity() {
             installId = app.installId,
             onState = { next ->
                 streamLocks.setActive(next.connected)
+                // A Mac we streamed from once connects by itself from then on.
+                if (next.streaming && ::server.isInitialized && server.isReverseSession) {
+                    currentMacKey?.let { rememberMac(it) }
+                }
                 uiState.value = next.copy(
                     deviceSummary = next.deviceSummary.ifEmpty { deviceInfo.summaryLine() },
                     connectionMode = connectionMode.name,
@@ -272,6 +294,8 @@ class MainActivity : ComponentActivity() {
             },
             onClipboardImage = ::receiveClipboardImage,
             onMode = controls::setMirror,
+            pairToken = { if (server.isReverseSession) pairTokens.tokenFor(currentMacKey) else null },
+            onPairToken = { token -> pairTokens.save(currentMacKey, token) },
         )
         touchMapper = TouchMapper(this, server, controls, onHaptic = ::haptic) { viewport ->
             latestViewport = viewport
@@ -287,12 +311,19 @@ class MainActivity : ComponentActivity() {
         )
         // When the Mac cannot dial us (AP isolation), it advertises reverse host
         // and we dial the Mac instead.
-        macHostBrowser = MacHostBrowser(this) { host, port, name ->
-            runOnUiThread {
-                if (!::server.isInitialized) return@runOnUiThread
-                server.connectOutbound(host, port)
-            }
-        }
+        macHostBrowser = MacHostBrowser(
+            this,
+            onHost = { host, port, name ->
+                runOnUiThread {
+                    if (!::server.isInitialized) return@runOnUiThread
+                    nearbyMacs.value = nearbyMacs.value.withMac(NearbyMac(name, host, port))
+                    // A Mac this device already streamed from connects by itself;
+                    // a new one waits for a tap on its card.
+                    if (name in knownMacs()) dialMac(name, host, port)
+                }
+            },
+            onLost = { name -> runOnUiThread { nearbyMacs.value = nearbyMacs.value.withoutMac(name) } },
+        )
 
         val defaultName = Build.MODEL.ifBlank { "OpenDisplay" }
         server.setServiceName(defaultName)
@@ -320,6 +351,7 @@ class MainActivity : ComponentActivity() {
                     onDelete = app.updates::discard,
                 )
                 val controlsUi by controls.ui.collectAsState()
+                val nearby by nearbyMacs.collectAsState()
                 val hud by server.hud.collectAsState()
                 val caps by server.caps.collectAsState()
                 // A fresh Mac session knows nothing of our zoom; say it again.
@@ -382,6 +414,10 @@ class MainActivity : ComponentActivity() {
                         )
                     },
                     onConnectionMode = { mode -> setConnectionMode(mode) },
+                    onConnectMac = ::connectToMac,
+                    nearbyMacs = nearby,
+                    onConnectNearby = ::connectToNearby,
+                    lastMacAddress = prefs.getString(KEY_MAC_ADDRESS, "").orEmpty(),
                     createKeyboardView = { context ->
                         KeyboardCaptureView(context, textForwarder, ::forwardSoftKey)
                             .also { keyboardView = it }
@@ -459,6 +495,26 @@ class MainActivity : ComponentActivity() {
                 }
             },
         )
+    }
+
+    /** Dial a Mac that listens for reverse connections, and remember it for next time. */
+    private fun connectToMac(address: MacAddress) {
+        prefs.edit().putString(KEY_MAC_ADDRESS, address.text).apply()
+        dialMac(address.text, address.host, address.port)
+    }
+
+    private fun connectToNearby(mac: NearbyMac) = dialMac(mac.name, mac.host, mac.port)
+
+    private fun dialMac(key: String, host: String, port: Int) {
+        currentMacKey = key
+        server.connectOutbound(host, port)
+    }
+
+    private fun knownMacs(): Set<String> = prefs.getStringSet(KEY_KNOWN_MACS, emptySet()).orEmpty()
+
+    private fun rememberMac(key: String) {
+        if (key in knownMacs()) return
+        prefs.edit().putStringSet(KEY_KNOWN_MACS, knownMacs() + key).apply()
     }
 
     private fun setConnectionMode(mode: ConnectionMode) {
@@ -693,6 +749,8 @@ private const val DIM_BRIGHTNESS = 0.02f
 private const val PREFS = "opendisplay"
 private const val KEY_SIDEBAR_RIGHT = "sidebarRight"
 private const val KEY_HINT_SEEN = "streamHintSeen"
+private const val KEY_MAC_ADDRESS = "macAddress"
+private const val KEY_KNOWN_MACS = "knownMacs"
 private const val HINT_MS = 6_000L
 
 @Composable
@@ -704,6 +762,10 @@ private fun ReceiverScreen(
     updates: UpdatesUi,
     sidebar: @Composable () -> Unit,
     onConnectionMode: (ConnectionMode) -> Unit,
+    onConnectMac: (MacAddress) -> Unit,
+    lastMacAddress: String,
+    nearbyMacs: List<NearbyMac>,
+    onConnectNearby: (NearbyMac) -> Unit,
     createKeyboardView: (Context) -> View,
     onBindViews: (TextureView?, CursorOverlayView?) -> Unit,
     onSurfaceReady: (Surface) -> Unit,
@@ -806,7 +868,10 @@ private fun ReceiverScreen(
             sidebar()
             StreamNotices(reconnecting = !state.streaming, showHint = showHint, onHintDone = onHintDone)
         } else {
-            ConnectionScreen(state, onConnectionMode, updates)
+            ConnectionScreen(
+                state, onConnectionMode, updates, onConnectMac, lastMacAddress,
+                nearbyMacs, onConnectNearby,
+            )
         }
     }
 }

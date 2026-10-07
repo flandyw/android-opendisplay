@@ -125,8 +125,12 @@ enum ConnectionTarget: Hashable {
 final class DeviceSession: ObservableObject, Identifiable {
     nonisolated let id: String
     let target: ConnectionTarget
-    let name: String
+    // For a reverse connection the hello's device name replaces the generic one.
+    @Published var name: String
     let sender: MacSender
+    // False for a reverse connection that has not been allowed yet; such a
+    // session must not affect any other.
+    var trusted = true
 
     @Published var status = "Starting…"
     @Published var framesSent = 0
@@ -273,11 +277,13 @@ final class SenderController: ObservableObject {
     @Published private(set) var adbAvailable = true
     private var adbPorts: [String: UInt16] = [:]
     private let adb = AdbBridge()
-    // Receivers that dial this Mac instead of the other way round. Off unless
-    // the user turns it on: a listener lets anything on the network ask to see
-    // and drive this Mac, so each new device is also confirmed once.
+    // Receivers that dial this Mac instead of the other way round. On by
+    // default so an Android device simply finds the Mac. Nothing is shown or
+    // controlled until a person allows the device (see `admitReverse`).
     private let reverseListener = ReverseListener()
-    @Published var reverseConnectEnabled = UserDefaults.standard.bool(forKey: "reverseConnect") {
+    @Published var reverseConnectEnabled =
+        UserDefaults.standard.object(forKey: "reverseConnect") == nil
+        ? true : UserDefaults.standard.bool(forKey: "reverseConnect") {
         didSet {
             UserDefaults.standard.set(reverseConnectEnabled, forKey: "reverseConnect")
             if reverseConnectEnabled {
@@ -288,12 +294,16 @@ final class SenderController: ObservableObject {
             }
         }
     }
-    @Published private(set) var reverseAllowedHosts = Set(
-        UserDefaults.standard.stringArray(forKey: "reverseAllowedHosts") ?? []) {
-        didSet { UserDefaults.standard.set(Array(reverseAllowedHosts), forKey: "reverseAllowedHosts") }
+    // install id → the token that device was given when it was allowed.
+    @Published private(set) var reversePaired =
+        UserDefaults.standard.dictionary(forKey: "reversePaired") as? [String: String] ?? [:] {
+        didSet { UserDefaults.standard.set(reversePaired, forKey: "reversePaired") }
     }
+    // Devices turned down in this run: not asked about again until relaunch.
+    private var reverseDeniedThisRun: Set<String> = []
+    private var reversePromptShowing = false
 
-    func forgetReverseDevices() { reverseAllowedHosts = [] }
+    func forgetReverseDevices() { reversePaired = [:] }
 
     private var browser: NWBrowser?
     private var usbWatcher: UsbmuxDeviceWatcher?
@@ -384,23 +394,53 @@ final class SenderController: ObservableObject {
         if reverseConnectEnabled { reverseListener.start() }
     }
 
-    /// Whether to take a connection from [host]: this Mac itself (an
-    /// `adb reverse` tunnel) and devices the user already approved go straight
-    /// through; anything else is asked about first.
-    private func approveReverse(host: String) -> Bool {
-        if host == "127.0.0.1" || host == "::1" || reverseAllowedHosts.contains(host) { return true }
+    /// Decide, once its hello names it, whether a device that dialed in may use
+    /// this Mac. A device holding the token it was given when allowed goes
+    /// straight through; any other is asked about, and a refusal ends its session.
+    private func admitReverse(_ info: PhoneInfo, session: DeviceSession?) -> Bool {
+        let decision = ReversePairing.decide(deviceID: info.id, presentedToken: info.pairToken,
+                                             paired: reversePaired)
+        let allowed = decision == .admit || askToAllow(info, session: session)
+        if allowed {
+            session?.trusted = true
+        } else if let session {
+            end(session)
+        }
+        return allowed
+    }
+
+    private func askToAllow(_ info: PhoneInfo, session: DeviceSession?) -> Bool {
+        let key = info.id ?? info.name ?? "unknown"
+        // One question at a time, and a "no" holds until relaunch, so a device
+        // that keeps knocking cannot flood the screen with dialogs.
+        guard !reversePromptShowing, !reverseDeniedThisRun.contains(key) else { return false }
+        reversePromptShowing = true
+        defer { reversePromptShowing = false }
+        let name = info.name ?? info.kind
         let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Allow the device at \(host) to use this Mac's screen?"
-        alert.informativeText = "A device at \(host) opened a connection to OpenDisplay. If you allow it, "
-            + "it will show this Mac's screen and can control the Mac with touch and keyboard. "
-            + "Only allow a device you recognize."
-        alert.addButton(withTitle: "Allow")
+        alert.alertStyle = .informational
+        alert.messageText = "Allow “\(name)” to use this Mac as a display?"
+        alert.informativeText = "“\(name)” wants to show this Mac's screen and control it with touch and "
+            + "keyboard. Only allow a device you recognize."
+        alert.addButton(withTitle: "Always Allow")
+        alert.addButton(withTitle: "Allow Once")
         alert.addButton(withTitle: "Don't Allow")
         NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return false }
-        reverseAllowedHosts.insert(host)
-        return true
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            // Pairing: from now on the device proves itself with a secret token.
+            if let id = info.id {
+                let token = ReversePairing.newToken()
+                reversePaired[id] = token
+                session?.sender.sendPairToken(token)
+            }
+            return true
+        case .alertSecondButtonReturn:
+            return true
+        default:
+            reverseDeniedThisRun.insert(key)
+            return false
+        }
     }
 
     /// A receiver dialed us. Reconnections of a known one are handed to its
@@ -410,8 +450,7 @@ final class SenderController: ObservableObject {
         let host = ReverseListener.peerHost(of: connection)
         let target = ConnectionTarget.reverse(host: host)
         Log.info("reverse connection from \(host)")
-        guard reverseConnectEnabled, approveReverse(host: host) else {
-            Log.info("reverse connection from \(host) refused")
+        guard reverseConnectEnabled else {
             connection.cancel()
             return
         }
@@ -419,9 +458,11 @@ final class SenderController: ObservableObject {
             existing.sender.adoptIncoming(connection)
             return
         }
-        // A device that is also reachable another way drops its twin once its
-        // hello names it (see `dedupeSessions`).
-        connect(to: target, incoming: connection)
+        // A device that is also reachable another way drops its twin once it
+        // has been allowed (see `dedupeSessions`). This Mac's own loopback
+        // (an `adb reverse` tunnel) needs no approval.
+        let local = host == "127.0.0.1" || host == "::1"
+        connect(to: target, incoming: connection, requireApproval: !local)
     }
 
     private func startBrowsing() {
@@ -692,7 +733,7 @@ final class SenderController: ObservableObject {
         // An Android that dialed in chose that link: its receiver replaced
         // whatever it had before. Any other session for it would redial and
         // take it back, and the two would trade the receiver forever.
-        for reverse in sessions where reverse.target.isReverse && !reverse.failed {
+        for reverse in sessions where reverse.target.isReverse && !reverse.failed && reverse.trusted {
             guard let id = reverse.deviceID else { continue }
             for twin in sessions where twin !== reverse && !twin.target.isReverse && twin.deviceID == id {
                 Log.info("\(reverse.id) is the device's live link — dropping its twin \(twin.id)")
@@ -752,7 +793,8 @@ final class SenderController: ObservableObject {
     }
 
     func connect(to target: ConnectionTarget, userInitiated: Bool = false,
-                 awaitingWake: Bool = false, incoming: NWConnection? = nil) {
+                 awaitingWake: Bool = false, incoming: NWConnection? = nil,
+                 requireApproval: Bool = false) {
         let id = target.sessionID
         if let existing = session(for: id) {
             // A failed session holds no pipeline — replace the corpse
@@ -836,6 +878,7 @@ final class SenderController: ObservableObject {
             guard let self, let session else { return }
             session.deviceID = info.id
             session.deviceKind = info.device
+            if session.target.isReverse, let name = info.name, !name.isEmpty { session.name = name }
             session.helloArrived(info)
             let power = (info.power ?? []).compactMap(PowerAction.init(rawValue:))
             if power != session.powerActions {
@@ -911,6 +954,12 @@ final class SenderController: ObservableObject {
             self.end(session)
         }
         sessions.append(session)
+        if incoming != nil, requireApproval {
+            session.trusted = false
+            sender.admission = { [weak self, weak session] info in
+                await self?.admitReverse(info, session: session) ?? false
+            }
+        }
         // Hand over before start(): both queue work on the sender's queue, in order.
         if let incoming { sender.adoptIncoming(incoming) }
         Task {
@@ -1263,12 +1312,12 @@ struct ContentView: View {
                             .foregroundStyle(.secondary)
                     }
                     VStack(alignment: .leading, spacing: 4) {
-                        Toggle("Let Android devices connect to this Mac", isOn: $controller.reverseConnectEnabled)
-                        Text("For networks that block this Mac from reaching the device (guest Wi-Fi, client isolation). The device opens the connection, and you approve each new one. Leave off if you don't need it.")
+                        Toggle("Let Android devices find this Mac", isOn: $controller.reverseConnectEnabled)
+                        Text("An Android device on your network can ask to connect. You are asked before anything is shown or controlled; choose Always Allow and that device connects without asking next time.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        if !controller.reverseAllowedHosts.isEmpty {
-                            Button("Forget approved devices (\(controller.reverseAllowedHosts.count))") {
+                        if !controller.reversePaired.isEmpty {
+                            Button("Forget allowed devices (\(controller.reversePaired.count))") {
                                 controller.forgetReverseDevices()
                             }
                             .controlSize(.small)

@@ -192,6 +192,13 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private var viewportApplying = false
     private var captureConfig: SCStreamConfiguration?
 
+    /// Set for reverse connections: the controller decides, once the hello names
+    /// the device, whether it may use this Mac. Until then nothing is captured,
+    /// no input is accepted and the clipboard stays private. Nil = no check.
+    var admission: ((PhoneInfo) async -> Bool)?
+    // Confined to `queue`.
+    private var admitted = false
+
     /// `defaults` key behind the control panel's "Match device refresh rate".
     static let matchRefreshKey = "matchReceiverRefresh"
 
@@ -421,6 +428,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             // before the first encoder is created. Legacy receivers omit the
             // new fields and retain the existing H.264 behavior.
             let info = try await waitForHello()
+            try await admit(info)
             let content = try await SCShareableContent.current
             guard let display = content.displays.first else {
                 throw NSError(domain: "MacSender", code: 1,
@@ -450,6 +458,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 Task { await self.status(text) }
             }
             let info = try await waitForHello()
+            try await admit(info)
             try await setupExtend(info)
             // A hello during setup (a rotation inside the identity retry or
             // promotion window) found no stream to reconfigure; apply it now.
@@ -3134,7 +3143,34 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     /// Identify ourselves to the receiver: our protocol version and the oldest
     /// receiver version we still support.
+    /// Wait for the controller to let this device in (reverse connections only).
+    /// A refusal ends the session: the controller has already torn it down, so
+    /// this only needs to stop `start()`.
+    private func admit(_ info: PhoneInfo) async throws {
+        guard let admission else { return }
+        Task { await status("Waiting for you to allow \(info.name ?? endpointName)…") }
+        guard await admission(info) else { throw CancellationError() }
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.admitted = true
+            self.startClipboardSyncIfEnabled()
+        }
+    }
+
+    /// Give the device the token it presents on later reverse connections.
+    func sendPairToken(_ token: String) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let obj: [String: Any] = ["type": WireMessage.pair, "token": token]
+            guard let data = try? JSONSerialization.data(withJSONObject: obj),
+                  let json = String(data: data, encoding: .utf8) else { return }
+            self.sendJSONFrame(json)
+        }
+    }
+
     private func startClipboardSyncIfEnabled() {
+        // A device that has not been let in yet gets nothing off the clipboard.
+        guard admission == nil || admitted else { return }
         guard ClipboardSync.isEnabled, clipboardSync == nil else { return }
         // Images only go to a receiver that said it can take them.
         let receiverTakesImages = lastHello?.ext?.contains(WireCap.clipImage) == true

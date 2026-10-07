@@ -7,6 +7,16 @@ announces what it can send in `hello.ext`.
 
 Framing and base messages are unchanged (see WIRE.md in the Mac repo).
 
+## Reverse connect and pairing
+
+The tablet dials the Mac (`_opendisplay-mac._tcp`, port 9011). `hello` then
+carries `name` (the tablet's own name, for the Mac's prompt) and, if this Mac
+has allowed it before, `pairToken`. The Mac shows or captures nothing until it
+has admitted the device: a matching `pairToken` is admitted silently, anything
+else is asked about. When the user picks *Always Allow* the Mac sends
+`{"type":"pair","token":"…"}` once; the tablet stores it under the Mac it dialed
+and presents it from then on.
+
 ## hello additions
 
 | key       | type     | meaning                                              |

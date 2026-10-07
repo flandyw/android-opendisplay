@@ -143,8 +143,16 @@ toolchain, so no local Gradle install is required.
 
 **If classic dial fails** (`nc <device-ip> 9000` times out): reverse connect
 kicks in — Mac listens on **9011**, this app dials the Mac. Keep the app open.
-On the Mac turn on **Let Android devices connect to this Mac** (it is off by
-default, and the Mac asks you to approve each new device).
+The tablet lists Macs it finds on the network under **Macs nearby**; tap one to
+connect. The first time, the Mac asks you to allow this device (**Always Allow**,
+**Allow Once** or **Don't Allow**). After Always Allow the tablet holds a
+private pairing token and that Mac connects by itself from then on, with no
+prompts. Where mDNS is blocked too (guest Wi‑Fi), tap **Connect to a Mac by
+address** and enter the Mac's IP (`192.168.1.20`, or `host:port`); the address
+is remembered and re-dialed with backoff if the link drops. On the Mac,
+**Let Android devices find this Mac** is on by default and can be turned off.
+The token travels unencrypted like the rest of the protocol, so it keeps out
+casual and spoofed connections, not someone who can read your network traffic.
 With USB debugging connected, Mac may use `adb reverse tcp:9011` so the app
 can dial `127.0.0.1:9011` when pure Wi‑Fi peer traffic is blocked.
 

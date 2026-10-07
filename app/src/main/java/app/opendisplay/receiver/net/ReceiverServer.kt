@@ -100,6 +100,10 @@ class ReceiverServer(
     private val onClipboardImage: (ByteArray) -> Unit = {},
     /** The Mac's actual display mode (mirror = true) — invoked on the main thread. */
     private val onMode: (mirror: Boolean) -> Unit = {},
+    /** The token to present in `hello` to the Mac being dialed, if it gave us one. */
+    private val pairToken: () -> String? = { null },
+    /** The Mac asked us to remember [token] — invoked on an IO thread. */
+    private val onPairToken: (token: String) -> Unit = {},
 ) {
     private val tag = "ReceiverServer"
     private val appContext = context.applicationContext
@@ -162,6 +166,9 @@ class ReceiverServer(
     private var statsReportCounter = 0
 
     fun hasCap(cap: String): Boolean = cap in capsFlow.value
+
+    /** True while the session is one this device opened to a Mac (reverse connect). */
+    val isReverseSession: Boolean get() = lastOutbound != null
 
     fun updatePanel(info: PanelInfo) {
         val changed = panel != info
@@ -735,6 +742,9 @@ class ReceiverServer(
                         mainHandler.post { onMode(mode == "mirror") }
                     }
                 }
+                WireMessage.PAIR -> {
+                    obj.optString("token").takeIf { it.isNotEmpty() }?.let(onPairToken)
+                }
                 WireMessage.MODE -> {
                     val mode = obj.optString("mode")
                     if (mode == "mirror" || mode == "extend") {
@@ -796,9 +806,12 @@ class ReceiverServer(
             .put("ext", JSONArray(WireCaps.ALL))
             .put("device", "Android")
             .put("id", installId)
+            .put("name", serviceName)
             .put("pv", WireProtocol.VERSION)
             // Ask the Mac to stream system audio (AUD1 frames).
             .put("audio", 1)
+        // Only a reverse connection to a Mac that already paired with us has one.
+        pairToken()?.let { json.put("pairToken", it) }
         sendJson(json)
         Log.i(tag, "hello ${p.pixelsWide}x${p.pixelsHigh} @${p.scale}x audio=1")
     }

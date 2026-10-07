@@ -42,6 +42,7 @@ enum WireMessage {
     static let mode = "mode"                        // receiver -> Mac: switch mirror/extend (cap `mode`)
     static let viewport = "viewport"                // receiver -> Mac: zoomed-in rect to crop capture to (cap `viewport`)
     static let clipImage = "clipimg"                // both ways: PNG clipboard image (cap `clipimg`)
+    static let pair = "pair"                        // Mac -> receiver: pairing token to present on later reverse connections
 }
 
 /// Optional features the Mac lists in `welcome.caps`. They are gated by caps,

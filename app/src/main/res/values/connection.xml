@@ -34,6 +34,15 @@
     <string name="connection_choose_device">YOUR DEVICE</string>
     <string name="connection_manual">Connect with an address</string>
     <string name="connection_usb_help">USB setup help</string>
+    <string name="connection_nearby_title">Macs nearby</string>
+    <string name="connection_nearby_body">Tap your Mac to connect. The first time, your Mac asks you to allow this device.</string>
+    <string name="connection_mac_button">Connect to a Mac by address</string>
+    <string name="connection_mac_title">Connect to a Mac</string>
+    <string name="connection_mac_body">Use this when your Mac can’t reach this device, for example on guest Wi-Fi. In OpenDisplay on the Mac, turn on “Let Android devices connect to this Mac”, then enter its address here.</string>
+    <string name="connection_mac_label">Mac address</string>
+    <string name="connection_mac_hint">192.168.1.20 or My-Mac.local</string>
+    <string name="connection_mac_error">Enter an address like 192.168.1.20 or 192.168.1.20:9011.</string>
+    <string name="connection_mac_connect">Connect</string>
     <string name="connection_trouble">Having trouble connecting?</string>
     <string name="connection_wifi_settings">Open Wi-Fi settings</string>
     <string name="connection_vpn_settings">Open VPN settings</string>
@@ -68,5 +77,5 @@
     <string name="connection_device_info">Device information</string>
     <string name="connection_sending_desktop">Waiting for your desktop</string>
     <string name="connection_sending_desktop_body">Choose Extend or Mirror on your Mac. The screen switches to your desktop as soon as it arrives.</string>
-    <string name="connection_permission_help">First time? Allow Screen Recording on your Mac. Allow Accessibility to use touch input.</string>
+    <string name="connection_permission_help">First time? Allow this device when your Mac asks, then allow Screen Recording. Allow Accessibility to use touch input.</string>
 </resources>

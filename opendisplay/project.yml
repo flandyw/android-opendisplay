@@ -159,6 +159,7 @@ targets:
       - Mac/ViewportCrop.swift
       - Mac/SystemShortcuts.swift
       - Mac/AdbDevices.swift
+      - Mac/ReversePairing.swift
       - Mac/Log.swift
       - Mac/LogPolicies.swift
       - Shared/Protocol.swift

@@ -19,6 +19,8 @@ import java.net.Inet4Address
 class MacHostBrowser(
     context: Context,
     private val onHost: (host: String, port: Int, name: String) -> Unit,
+    /** A Mac stopped advertising (quit, or left the network). */
+    private val onLost: (name: String) -> Unit = {},
 ) {
     private val tag = "MacHostBrowser"
     private val appContext = context.applicationContext
@@ -111,6 +113,7 @@ class MacHostBrowser(
 
             override fun onServiceLost(service: NsdServiceInfo) {
                 Log.i(tag, "lost ${service.serviceName}")
+                service.serviceName?.let(onLost)
             }
 
             override fun onDiscoveryStopped(serviceType: String) {

@@ -44,6 +44,14 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import app.opendisplay.receiver.net.MacAddress
+import app.opendisplay.receiver.net.NearbyMac
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
@@ -100,12 +108,23 @@ import kotlinx.coroutines.launch
 private enum class ConnectionSheet { ADDRESS, HELP, USB, UPDATES }
 
 @Composable
-fun ConnectionScreen(state: ReceiverUiState, onConnectionMode: (ConnectionMode) -> Unit, updates: UpdatesUi? = null) {
+fun ConnectionScreen(
+    state: ReceiverUiState,
+    onConnectionMode: (ConnectionMode) -> Unit,
+    updates: UpdatesUi? = null,
+    /** Dial a Mac that listens for reverse connections; [lastMacAddress] pre-fills the field. */
+    onConnectMac: ((MacAddress) -> Unit)? = null,
+    lastMacAddress: String = "",
+    /** Macs found on the network; each is one tap to connect. */
+    nearbyMacs: List<NearbyMac> = emptyList(),
+    onConnectNearby: (NearbyMac) -> Unit = {},
+) {
     val context = LocalContext.current
     val mode = ConnectionMode.entries.firstOrNull { it.name == state.connectionMode }
         ?: ConnectionMode.NETWORK
     val stage = state.connectionStage(mode)
     var sheet by rememberSaveable { mutableStateOf<ConnectionSheet?>(null) }
+    var askingMac by rememberSaveable { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val settingsError = stringResource(R.string.connection_settings_unavailable)
@@ -155,6 +174,10 @@ fun ConnectionScreen(state: ReceiverUiState, onConnectionMode: (ConnectionMode) 
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
+                if (nearbyMacs.isNotEmpty() && !state.connected) {
+                    NearbyMacs(nearbyMacs, onConnectNearby, Modifier.widthIn(max = if (wide) 1120.dp else 560.dp).fillMaxWidth())
+                    Spacer(Modifier.height(spacing))
+                }
                 if (wide) {
                     Row(Modifier.widthIn(max = 1120.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(spacing), verticalAlignment = Alignment.CenterVertically) {
                         ConnectionHero(stage, state.problem, wide = true, modifier = Modifier.weight(1f))
@@ -170,6 +193,11 @@ fun ConnectionScreen(state: ReceiverUiState, onConnectionMode: (ConnectionMode) 
                 TextButton(onClick = { sheet = ConnectionSheet.HELP }) {
                     Text(stringResource(R.string.connection_trouble))
                 }
+                if (onConnectMac != null) {
+                    TextButton(onClick = { askingMac = true }) {
+                        Text(stringResource(R.string.connection_mac_button))
+                    }
+                }
                 if (updates != null) {
                     TextButton(onClick = { sheet = ConnectionSheet.UPDATES }) {
                         Text(stringResource(if (updates.hasUpdate) R.string.updates_button_available else R.string.updates_button))
@@ -177,6 +205,17 @@ fun ConnectionScreen(state: ReceiverUiState, onConnectionMode: (ConnectionMode) 
                 }
             }
         }
+    }
+
+    if (askingMac && onConnectMac != null) {
+        MacAddressDialog(
+            initial = lastMacAddress,
+            onDismiss = { askingMac = false },
+            onConnect = { address ->
+                askingMac = false
+                onConnectMac(address)
+            },
+        )
     }
 
     sheet?.let { current ->
@@ -218,6 +257,86 @@ fun ConnectionScreen(state: ReceiverUiState, onConnectionMode: (ConnectionMode) 
             }
         }
     }
+}
+
+/** Macs found automatically. The first time, the Mac asks the person to allow this device. */
+@Composable
+private fun NearbyMacs(macs: List<NearbyMac>, onConnect: (NearbyMac) -> Unit, modifier: Modifier = Modifier) {
+    Surface(modifier, shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.tertiaryContainer) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                stringResource(R.string.connection_nearby_title),
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier.semantics { heading() },
+            )
+            Text(
+                stringResource(R.string.connection_nearby_body),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+            macs.forEach { mac ->
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Symbol(R.drawable.ic_desktop_windows, modifier = Modifier.size(24.dp))
+                    Text(
+                        mac.name,
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Button(onClick = { onConnect(mac) }) {
+                        Text(stringResource(R.string.connection_mac_connect))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Asks for the address of a Mac to dial. A dialog, not a sheet: it needs the keyboard. */
+@Composable
+private fun MacAddressDialog(initial: String, onDismiss: () -> Unit, onConnect: (MacAddress) -> Unit) {
+    var text by rememberSaveable { mutableStateOf(initial) }
+    var showError by rememberSaveable { mutableStateOf(false) }
+    val submit = {
+        val address = MacAddress.parse(text)
+        if (address == null) showError = true else onConnect(address)
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.connection_mac_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(stringResource(R.string.connection_mac_body), style = MaterialTheme.typography.bodyMedium)
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it; showError = false },
+                    label = { Text(stringResource(R.string.connection_mac_label)) },
+                    placeholder = { Text(stringResource(R.string.connection_mac_hint)) },
+                    singleLine = true,
+                    isError = showError,
+                    supportingText = if (showError) {
+                        { Text(stringResource(R.string.connection_mac_error)) }
+                    } else null,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
+                    keyboardActions = KeyboardActions(onGo = { submit() }),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = submit) { Text(stringResource(R.string.connection_mac_connect)) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(android.R.string.cancel)) }
+        },
+    )
 }
 
 @Composable

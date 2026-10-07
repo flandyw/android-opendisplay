@@ -33,13 +33,17 @@ USB detection runs `adb`, which starts adb's background server; a server from a
 different adb version than another tool's (Android Studio) can restart theirs.
 So it is a toggle, off by default.
 
-### Reverse connect is opt-in on purpose
+### Reverse connect: on by default, gated by pairing
 
-The protocol has no authentication. A listener on the Mac lets anything on the
-network ask to see and drive it, so it is off by default ("Let Android devices
-connect to this Mac"), and the first connection from each address asks for
-confirmation. Loopback (an `adb reverse` tunnel) is trusted. Do not make it
-default-on without adding pairing.
+A listener lets anything on the network ask to see and drive the Mac, so a
+dialed-in device gets nothing (no capture, no input, no clipboard) until
+`MacSender.admission` lets it in. The controller (`admitReverse`) admits a device
+whose `hello.pairToken` matches the token the Mac gave it (`ReversePairing`);
+otherwise it asks: Always Allow (issues a token, sent as a `pair` message),
+Allow Once, or Don't Allow (silent until relaunch). Install ids are public in
+Bonjour, so they are never trusted on their own. Tokens are stored in
+UserDefaults (`reversePaired`) and travel unencrypted; Keychain storage and TLS
+are the next hardening steps. Loopback (an `adb reverse` tunnel) is trusted.
 
 ## Not done
 
@@ -66,9 +70,11 @@ default-on without adding pairing.
    convention (display points, top-left) is the first thing to check.
 3. Mirror mode: touch, keyboard and the pen act on the Mac.
 4. `adb devices` shows the tablet; the row appears under Devices and connects.
-5. With "Let Android devices connect" on, turn off the Mac → tablet path (VPN
-   lockdown or AP isolation) and confirm the prompt appears once and the tablet
-   streams. Decline once: the tablet must not be able to connect.
+5. Turn off the Mac → tablet path (VPN lockdown or AP isolation). The Mac
+   should appear under "Macs nearby" on the tablet; tap it, confirm the Mac's
+   prompt names the tablet, choose Always Allow, and the tablet streams.
+   Disconnect and reconnect: no prompt. "Forget allowed devices" brings it back.
+   Choose Don't Allow: the tablet must not get a picture or control.
 6. Copy an image on the Mac, paste on the tablet, and the reverse.
 7. "Match device refresh rate" on a 90/120 Hz tablet: check `stream selected`
    in the log shows the rate, and that the picture does not stutter. If macOS

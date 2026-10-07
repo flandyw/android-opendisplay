@@ -374,6 +374,7 @@ section 4.
 | `click` | cap `click` | `button`, `x`, `y`, `mods`? | Discrete click (`right`, `left`, `middle`) |
 | `clip` | cap `clip` | `text` | Plain-text clipboard, either direction, up to 256K characters |
 | `clipimg` | cap `clipimg` | `png` | Clipboard image, either direction: base64 PNG, at most 600 000 PNG bytes so it fits one 1 MiB control frame. Needs `clip` to be on |
+| `pair` | reverse connect | `token` | Mac → receiver, once, after the user chose Always Allow: the secret the receiver presents as `hello.pairToken` on later connections to this Mac |
 | `viewport` | cap `viewport` | `x`, `y`, `w`, `h`, `z`? | Receiver → sender: the part of the desktop a zoomed receiver is showing, in normalized desktop space. The sender crops its capture to it and encodes the crop at the full stream size, so zoom shows real detail. A rect covering (almost) the whole desktop clears the crop; a new connection starts uncropped |
 | `mode` | cap `mode` | `mode` | Receiver → sender: ask for `mirror` or `extend`. The sender also states the session's actual mode in `welcome.mode` |
 

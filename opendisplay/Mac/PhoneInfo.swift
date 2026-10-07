@@ -28,6 +28,9 @@ struct PhoneInfo: Decodable {
                           // stream and virtual display when "Match device
                           // refresh rate" is on, otherwise 60
     let ext: [String]?    // receiver's optional extensions; ignored if absent
+    let name: String?     // the device's own name ("Pixel Tablet"), for prompts
+    let pairToken: String?  // token this Mac gave the device when it was allowed
+                            // (reverse connect); see ReversePairing
 
     var kind: String { device ?? "device" }
     var protocolVersion: Int { pv ?? WireProtocol.assumedWhenAbsent }

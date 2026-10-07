@@ -43,6 +43,8 @@ object WireMessage {
     const val CLIP = "clip"
     /** Mirror vs extended desktop request (Android → Mac). See [WireCaps.MODE]. */
     const val MODE = "mode"
+    /** Mac → tablet: the pairing token to present on later reverse connections. */
+    const val PAIR = "pair"
     /** PNG clipboard image, both directions. See [WireCaps.CLIP_IMAGE]. */
     const val CLIP_IMAGE = "clipimg"
 }
