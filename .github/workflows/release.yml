@@ -39,17 +39,44 @@ jobs:
           echo "count=$count" >> "$GITHUB_OUTPUT"
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "tag=v$name" >> "$GITHUB_OUTPUT"
-          if gh release view "v$name" >/dev/null 2>&1; then
-            echo "Release v$name already exists"
+          # A release is complete once it has the APK, the DMG and the appcast; a partial
+          # one (e.g. a failed Android build) is resumed and its assets are replaced.
+          assets=$(gh release view "v$name" --json assets -q '.assets[].name' 2>/dev/null || true)
+          if grep -q '\.apk$' <<<"$assets" && grep -q '\.dmg$' <<<"$assets" && grep -qx 'appcast.xml' <<<"$assets"; then
+            echo "Release v$name is already complete"
             echo skip=true >> "$GITHUB_OUTPUT"
           else
             echo skip=false >> "$GITHUB_OUTPUT"
           fi
 
-  android:
+  # Created first so the faster macOS build can attach its assets as soon as it finishes.
+  release:
     needs: version
     if: needs.version.outputs.skip != 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          NAME: ${{ needs.version.outputs.name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG exists; resuming"
+          else
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "OpenDisplay $NAME" --generate-notes
+          fi
+
+  android:
+    needs: [version, release]
+    if: needs.version.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -84,16 +111,22 @@ jobs:
           "$signer" verify --verbose --print-certs "$apk"
           mkdir -p dist
           cp "$apk" "dist/OpenDisplay-$VERSION_NAME.apk"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: android
-          path: dist/*.apk
-          if-no-files-found: error
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The in-app updater reads SHA256SUMS; macOS publishes its own checksum file.
+          (cd dist && sha256sum *.apk > SHA256SUMS)
+          gh release upload "$TAG" dist/* --clobber
 
   macos:
-    needs: version
+    needs: [version, release]
     if: needs.version.outputs.skip != 'true'
     runs-on: macos-26
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: opendisplay
@@ -177,35 +210,11 @@ jobs:
 
           build OpenSidecarMac "OpenDisplay" OpenDisplay appcast.xml OpenDisplay 14.0
           build OpenSidecarMacReceiver "OpenDisplay Receiver" OpenDisplayReceiver appcast-receiver.xml "OpenDisplay Receiver" 12.0
-      - uses: actions/upload-artifact@v7
-        with:
-          name: macos
-          path: |
-            dist/*.dmg
-            dist/appcast*.xml
-          if-no-files-found: error
-
-  publish:
-    needs: [version, android, macos]
-    if: needs.version.outputs.skip != 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: actions/download-artifact@v8
-        with:
-          path: dist
-          merge-multiple: true
-      - name: Publish GitHub release
+      - name: Upload to release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.version.outputs.tag }}
-          NAME: ${{ needs.version.outputs.name }}
         run: |
           set -euo pipefail
-          (cd dist && sha256sum * > SHA256SUMS)
-          gh release create "$TAG" dist/* --target "$GITHUB_SHA" \
-            --title "OpenDisplay $NAME" --generate-notes
+          (cd ../dist && sha256sum *.dmg > SHA256SUMS-macos)
+          gh release upload "$TAG" ../dist/* --clobber
