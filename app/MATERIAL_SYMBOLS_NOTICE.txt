@@ -1,0 +1,9 @@
+The ic_arrow_forward, ic_check, ic_close, ic_content_copy, ic_desktop_windows,
+ic_expand_more, ic_help, ic_info, ic_settings, ic_touch_app, ic_usb, and ic_wifi
+vector drawables are Google's Material Symbols Rounded (24 px).
+
+Source: https://github.com/google/material-design-icons/tree/master/symbols/android
+Copyright Google LLC. Licensed under the Apache License, Version 2.0.
+https://www.apache.org/licenses/LICENSE-2.0
+
+The source tint attribute was removed; Compose supplies the themed icon color.

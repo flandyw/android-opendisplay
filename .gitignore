@@ -47,3 +47,10 @@ Android/*.iml
 Android/.idea/
 *.apk
 *.aab
+
+# Release signing key (never commit)
+.signing/
+.tooling/
+release-server/build/
+.gradle/
+.kotlin/

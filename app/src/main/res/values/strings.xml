@@ -15,4 +15,20 @@
     <string name="fg_channel_desc">Keeps the display session alive in the background</string>
     <string name="fg_title">OpenDisplay is ready</string>
     <string name="fg_text">Listening for your Mac — tap to return</string>
+    <string name="updates_title">App updates</string>
+    <string name="updates_button">App updates</string>
+    <string name="updates_button_available">Update available</string>
+    <string name="updates_unsupported">Updates are only offered in the release build.</string>
+    <string name="updates_auto">Check on launch</string>
+    <string name="updates_check">Check for updates</string>
+    <string name="updates_loading">Loading downloaded update…</string>
+    <string name="updates_checking">Checking for updates…</string>
+    <string name="updates_downloading">Downloading OpenDisplay %1$s…</string>
+    <string name="updates_verifying">Verifying OpenDisplay %1$s…</string>
+    <string name="updates_ready">OpenDisplay %1$s is ready to install.</string>
+    <string name="updates_available">OpenDisplay %1$s is available.</string>
+    <string name="updates_install">Install update</string>
+    <string name="updates_delete">Delete download</string>
+    <string name="updates_download">Download update</string>
+    <string name="updates_download_newer">Download newer update</string>
 </resources>

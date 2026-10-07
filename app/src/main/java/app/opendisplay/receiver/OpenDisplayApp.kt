@@ -2,10 +2,14 @@ package app.opendisplay.receiver
 
 import android.app.Application
 import android.content.Context
+import app.opendisplay.receiver.update.AppUpdates
 import java.util.UUID
 
 class OpenDisplayApp : Application() {
     val installId: String by lazy { loadOrCreateInstallId(this) }
+
+    /** Process-owned so downloads and installs outlive Activity recreation. */
+    val updates: AppUpdates by lazy { AppUpdates(this) }
 
     companion object {
         private const val PREFS = "opendisplay"

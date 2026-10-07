@@ -1,10 +1,8 @@
 package app.opendisplay.receiver
 
-import android.content.Intent
 import android.graphics.SurfaceTexture
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.view.Surface
 import android.view.TextureView
 import android.view.ViewGroup
@@ -14,26 +12,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -41,16 +21,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -67,6 +42,9 @@ import app.opendisplay.receiver.net.ReceiverServer
 import app.opendisplay.receiver.net.ReceiverUiState
 import app.opendisplay.receiver.net.WifiNetworkHolder
 import app.opendisplay.receiver.protocol.WireProtocol
+import app.opendisplay.receiver.ui.ConnectionScreen
+import app.opendisplay.receiver.ui.OpenDisplayTheme
+import app.opendisplay.receiver.ui.UpdatesUi
 import app.opendisplay.receiver.ui.CursorOverlayView
 import app.opendisplay.receiver.video.H264Decoder
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -202,12 +180,25 @@ class MainActivity : ComponentActivity() {
         macHostBrowser?.start()
         applyConnectionMode(connectionMode)
         ReceiverForegroundService.start(this)
+        app.updates.check(manual = false)
 
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
+            OpenDisplayTheme {
                 val state by uiState.collectAsState()
+                val updateState by app.updates.state.collectAsState()
+                var autoCheck by remember { mutableStateOf(app.updates.autoCheck) }
+                val updatesUi = UpdatesUi(
+                    state = updateState,
+                    autoCheck = autoCheck,
+                    onAutoCheck = { autoCheck = it; app.updates.autoCheck = it },
+                    onCheck = { app.updates.check(manual = true) },
+                    onDownload = app.updates::download,
+                    onInstall = app.updates::install,
+                    onDelete = app.updates::discard,
+                )
                 ReceiverScreen(
                     state = state,
+                    updates = updatesUi,
                     onConnectionMode = { mode -> setConnectionMode(mode) },
                     onBindViews = { texture, cursor ->
                         videoView = texture
@@ -381,6 +372,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun ReceiverScreen(
     state: ReceiverUiState,
+    updates: UpdatesUi,
     onConnectionMode: (ConnectionMode) -> Unit,
     onBindViews: (TextureView?, CursorOverlayView?) -> Unit,
     onSurfaceReady: (Surface) -> Unit,
@@ -389,8 +381,9 @@ private fun ReceiverScreen(
     onPanelMetrics: (widthPx: Int, heightPx: Int, scale: Double) -> Unit,
 ) {
     val activity = LocalContext.current as? MainActivity
+    val streaming by rememberUpdatedState(state.streaming)
     DisposableEffect(state.streaming) {
-        activity?.setImmersiveMode(state.streaming || state.connected)
+        activity?.setImmersiveMode(state.streaming)
         onDispose { }
     }
 
@@ -456,7 +449,8 @@ private fun ReceiverScreen(
                     onBindViews(texture, cursor)
 
                     setOnTouchListener { v, event ->
-                        val handled = onTouch(event, v.width, v.height)
+                        // Idle UI must never forward taps to the Mac underneath it.
+                        val handled = if (streaming) onTouch(event, v.width, v.height) else true
                         if (handled) v.performClick()
                         handled
                     }
@@ -468,274 +462,7 @@ private fun ReceiverScreen(
         )
 
         if (!state.streaming) {
-            IdleOverlay(state, onConnectionMode)
-        }
-    }
-}
-
-@Composable
-private fun IdleOverlay(
-    state: ReceiverUiState,
-    onConnectionMode: (ConnectionMode) -> Unit,
-) {
-    val context = LocalContext.current
-    val mode = ConnectionMode.entries.firstOrNull { it.name == state.connectionMode }
-        ?: ConnectionMode.NETWORK
-    var showVpnHelp by remember { mutableStateOf(false) }
-
-    if (showVpnHelp) {
-        VpnKillSwitchHelpDialog(
-            onDismiss = { showVpnHelp = false },
-            onOpenSettings = {
-                showVpnHelp = false
-                openVpnSettings(context)
-            },
-        )
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            // Fully opaque: never show a leftover stream frame behind the menu.
-            .background(Color.Black)
-            .verticalScroll(rememberScrollState())
-            .padding(32.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(
-            text = "OpenDisplay",
-            color = Color.White,
-            fontSize = 32.sp,
-            style = MaterialTheme.typography.headlineMedium,
-        )
-        Spacer(modifier = Modifier.height(12.dp))
-        Text(
-            text = state.status,
-            color = Color(0xFFB0B0B0),
-            fontSize = 18.sp,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(modifier = Modifier.height(20.dp))
-        ConnectionModePicker(selected = mode, onSelect = onConnectionMode)
-        Spacer(modifier = Modifier.height(20.dp))
-        Text(
-            text = "Port ${state.port}",
-            color = Color.White,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 16.sp,
-        )
-        // Always show LAN addresses — port 9000 stays open in both modes.
-        if (state.localAddresses.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(8.dp))
-            state.localAddresses.forEach { ip ->
-                Text(
-                    text = "$ip:${state.port}",
-                    color = Color(0xFF8AB4F8),
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 18.sp,
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(16.dp))
-        when (mode) {
-            ConnectionMode.NETWORK -> {
-                Text(
-                    text = "Same Wi‑Fi as your Mac. OpenDisplay → pick this device,\nor Connect over network with an address above.\nAlso works with USB (adb) at the same time.",
-                    color = Color(0xFF9E9E9E),
-                    fontSize = 14.sp,
-                    textAlign = TextAlign.Center,
-                    lineHeight = 20.sp,
-                )
-            }
-            ConnectionMode.USB -> {
-                Text(
-                    text = "Listening on port ${state.port} (USB + Wi‑Fi).\n\n" +
-                        "USB (recommended, keeps Mac internet):\n" +
-                        "1. Enable USB debugging\n" +
-                        "2. Plug into the Mac · accept prompt\n" +
-                        "3. Mac OpenDisplay → Android USB\n\n" +
-                        "Wi‑Fi still works: use the IP above or discovery.",
-                    color = Color(0xFF9E9E9E),
-                    fontSize = 14.sp,
-                    textAlign = TextAlign.Center,
-                    lineHeight = 20.sp,
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(20.dp))
-        // Apps cannot flip the OS kill switch; open Settings and show steps.
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth(0.92f)
-                .clickable(role = Role.Button) { showVpnHelp = true },
-            color = Color(0xFF2A2A2A),
-            shape = MaterialTheme.shapes.small,
-        ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    text = "Can't connect over Wi‑Fi?",
-                    color = Color.White,
-                    fontSize = 15.sp,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "GrapheneOS VPN lockdown · turn off\n" +
-                        "“Block connections without VPN”",
-                    color = Color(0xFFFBBF24),
-                    fontSize = 13.sp,
-                    textAlign = TextAlign.Center,
-                    lineHeight = 18.sp,
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(12.dp))
-        Text(
-            text = "Pinch to zoom · double-tap reset · stays on in background",
-            color = Color(0xFF6E6E6E),
-            fontSize = 12.sp,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = "Advertised as \"${state.serviceName}\" · always on :${state.port}",
-            color = Color(0xFF6E6E6E),
-            fontSize = 12.sp,
-        )
-        if (state.deviceSummary.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = state.deviceSummary,
-                color = Color(0xFF555555),
-                fontFamily = FontFamily.Monospace,
-                fontSize = 11.sp,
-                textAlign = TextAlign.Center,
-            )
-        }
-    }
-}
-
-/**
- * GrapheneOS enables Always-on VPN and “Block connections without VPN”
- * (lockdown) when any VPN is first set up. Lockdown blocks LAN peer TCP
- * even if the tunnel looks disconnected. Apps cannot clear it.
- */
-@Composable
-private fun VpnKillSwitchHelpDialog(
-    onDismiss: () -> Unit,
-    onOpenSettings: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(text = "Wi‑Fi blocked by VPN lockdown")
-        },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-            ) {
-                Text(
-                    text = VPN_LOCKDOWN_HELP_TEXT,
-                    lineHeight = 20.sp,
-                    fontSize = 14.sp,
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onOpenSettings) {
-                Text("Open VPN settings")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        },
-    )
-}
-
-/**
- * User-facing copy for GrapheneOS / Android VPN lockdown.
- * Keep lines short for readability on tablets and phones.
- */
-private const val VPN_LOCKDOWN_HELP_TEXT =
-    "If Wi‑Fi fails but USB / adb reverse works, " +
-        "the OS VPN lockdown is usually still on.\n\n" +
-        "GrapheneOS turns these ON by default " +
-        "the first time you set up any VPN:\n\n" +
-        "• Always-on VPN — keeps that VPN selected\n" +
-        "• Block connections without VPN — kill switch\n\n" +
-        "The second toggle is what blocks LAN " +
-        "(Mac ↔ tablet TCP). It still blocks " +
-        "even when ExpressVPN / Nord / WireGuard " +
-        "looks disconnected.\n\n" +
-        "Fix (required for pure Wi‑Fi):\n\n" +
-        "1. Settings → Network & internet → VPN\n" +
-        "2. Tap the gear on each listed VPN\n" +
-        "3. Turn OFF “Block connections without VPN”\n" +
-        "4. Optionally turn Always-on off too\n" +
-        "5. Toggle Wi‑Fi, then Connect over network\n\n" +
-        "Also enable Allow LAN / turn off Network " +
-        "Lock inside the VPN app if present.\n\n" +
-        "This app cannot flip those toggles " +
-        "(only you or a device admin can).\n\n" +
-        "USB + adb reverse still works under " +
-        "lockdown because the tablet dials " +
-        "127.0.0.1, not your Mac’s LAN IP."
-
-private fun openVpnSettings(context: android.content.Context) {
-    val intents = listOf(
-        Intent(Settings.ACTION_VPN_SETTINGS),
-        Intent(Settings.ACTION_WIRELESS_SETTINGS),
-        Intent(Settings.ACTION_SETTINGS),
-    )
-    for (intent in intents) {
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        try {
-            context.startActivity(intent)
-            return
-        } catch (_: Exception) {
-            // try next fallback
-        }
-    }
-}
-
-@Composable
-private fun ConnectionModePicker(
-    selected: ConnectionMode,
-    onSelect: (ConnectionMode) -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth(0.85f)
-            .selectableGroup(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        ConnectionMode.entries.forEach { mode ->
-            val active = mode == selected
-            Surface(
-                modifier = Modifier
-                    .weight(1f)
-                    .selectable(
-                        selected = active,
-                        onClick = { onSelect(mode) },
-                        role = Role.RadioButton,
-                    ),
-                color = if (active) Color(0xFF3B82F6) else Color(0xFF2A2A2A),
-                shape = MaterialTheme.shapes.small,
-            ) {
-                Text(
-                    text = mode.label,
-                    color = Color.White,
-                    fontSize = 15.sp,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(vertical = 10.dp),
-                )
-            }
+            ConnectionScreen(state, onConnectionMode, updates)
         }
     }
 }

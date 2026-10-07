@@ -51,6 +51,8 @@ private data class StatsTick(
     val enc50: Double,
 )
 
+enum class ReceiverProblem { UNREACHABLE, LISTENER, UPDATE_REQUIRED }
+
 data class ReceiverUiState(
     val status: String = "Starting…",
     val listening: Boolean = false,
@@ -65,6 +67,7 @@ data class ReceiverUiState(
     val deviceSummary: String = "",
     /** Network (default) or USB cable path. */
     val connectionMode: String = "NETWORK",
+    val problem: ReceiverProblem? = null,
 )
 
 /**
@@ -184,7 +187,7 @@ class ReceiverServer(
             for (candidate in candidates) {
                 try {
                     Log.i(tag, "dialing Mac $candidate:$port (reverse)")
-                    publish(state.copy(status = "Connecting to Mac $candidate:$port…", connected = false))
+                    publish(state.copy(status = "Connecting to Mac $candidate:$port…", connected = false, problem = null))
                     val socket = openWifiBoundSocket(candidate, port)
                     closeClient("outbound-replace")
                     clientSocket.set(socket)
@@ -199,6 +202,7 @@ class ReceiverServer(
             publish(
                 state.copy(
                     status = "Mac unreachable — ${lastError?.message ?: "no route"}",
+                    problem = ReceiverProblem.UNREACHABLE,
                     connected = false,
                     streaming = false,
                 ),
@@ -370,6 +374,7 @@ class ReceiverServer(
                 publish(
                     state.copy(
                         status = "Waiting for Mac…",
+                        problem = null,
                         listening = true,
                         connected = false,
                         streaming = false,
@@ -405,7 +410,7 @@ class ReceiverServer(
             } catch (e: Exception) {
                 if (!running) break
                 Log.e(tag, "listen error", e)
-                publish(state.copy(status = "Listen error: ${e.message}", listening = false))
+                publish(state.copy(status = "Listen error: ${e.message}", listening = false, problem = ReceiverProblem.LISTENER))
                 try {
                     serverSocket?.close()
                 } catch (_: Exception) {
@@ -422,6 +427,7 @@ class ReceiverServer(
         publish(
             state.copy(
                 status = "Connected — sending hello",
+                problem = null,
                 connected = true,
                 streaming = false,
             ),
@@ -463,6 +469,7 @@ class ReceiverServer(
             publish(
                 state.copy(
                     status = "Waiting for Mac…",
+                    problem = null,
                     connected = false,
                     streaming = false,
                     videoWidth = 0,
@@ -558,7 +565,7 @@ class ReceiverServer(
                 }
                 WireMessage.UPDATE_REQUIRED -> {
                     Log.w(tag, "Mac requested update: ${obj.optString("message")}")
-                    publish(state.copy(status = obj.optString("message", "Update required")))
+                    publish(state.copy(status = obj.optString("message", "Update required"), problem = ReceiverProblem.UPDATE_REQUIRED))
                 }
                 WireMessage.CURSOR -> {
                     val visible = obj.optInt("v", 0) == 1
