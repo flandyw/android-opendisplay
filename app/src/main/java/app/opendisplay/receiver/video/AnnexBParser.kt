@@ -1,15 +1,49 @@
 package app.opendisplay.receiver.video
 
+import java.nio.ByteBuffer
+
 /**
  * Split a Mac video payload into optional JSON meta + Annex B NALUs.
  * Start codes are 00 00 00 01 only (see WIRE.md).
  */
 object AnnexBParser {
+    /** A view into the received frame. Only SPS/PPS need an owned copy. */
+    data class Nalu(val payload: ByteArray, val offset: Int, val size: Int) {
+        val type: Int get() = payload[offset].toInt() and 0x1F
+        val isDecoderInput: Boolean get() = type != 7 && type != 8 && type != 6
+
+        fun copyBytes(): ByteArray = payload.copyOfRange(offset, offset + size)
+
+        fun contentEquals(bytes: ByteArray?): Boolean {
+            if (bytes == null || bytes.size != size) return false
+            for (i in bytes.indices) {
+                if (bytes[i] != payload[offset + i]) return false
+            }
+            return true
+        }
+    }
+
+    /** Borrows the received payload; keep it unchanged until decoder input is written. */
     data class ParsedFrame(
         val captureMs: Double?,
         val sendMs: Double?,
-        val nalus: List<ByteArray>,
-    )
+        val nalus: List<Nalu>,
+    ) {
+        val decoderInputSize: Int = nalus.sumOf { if (it.isDecoderInput) 4 + it.size else 0 }
+        val hasIdr: Boolean = nalus.any { it.type == 5 }
+
+        /** Write slices straight to MediaCodec, without rebuilding a frame array. */
+        fun writeDecoderInput(buffer: ByteBuffer) {
+            require(buffer.remaining() >= decoderInputSize) { "input buffer too small" }
+            for (nalu in nalus) {
+                if (!nalu.isDecoderInput) continue
+                buffer.put(START_CODE)
+                buffer.put(nalu.payload, nalu.offset, nalu.size)
+            }
+        }
+    }
+
+    private val START_CODE = byteArrayOf(0, 0, 0, 1)
 
     fun isJsonControl(payload: ByteArray): Boolean {
         // Cursor sprites are base64 PNG (Mac caps raw PNG at 24KB ≈ ~32KB b64).
@@ -23,50 +57,47 @@ object AnnexBParser {
     }
 
     fun parse(payload: ByteArray): ParsedFrame {
-        val startCodes = findStartCodes(payload)
+        var startCode = findStartCode(payload, 0)
         var captureMs: Double? = null
         var sendMs: Double? = null
-        val bodyStart = startCodes.firstOrNull() ?: payload.size
+        val bodyStart = if (startCode >= 0) startCode else payload.size
 
         if (bodyStart > 0) {
-            val meta = payload.copyOfRange(0, bodyStart).toString(Charsets.UTF_8)
+            val meta = String(payload, 0, bodyStart, Charsets.UTF_8)
             // Lightweight parse — avoid full JSON dependency on the hot path.
             captureMs = extractDouble(meta, "cap")
             sendMs = extractDouble(meta, "snd")
         }
 
-        val nalus = ArrayList<ByteArray>(startCodes.size)
-        for (i in startCodes.indices) {
-            val dataStart = startCodes[i] + 4
-            val dataEnd = if (i + 1 < startCodes.size) startCodes[i + 1] else payload.size
+        val nalus = ArrayList<Nalu>(4)
+        while (startCode >= 0) {
+            val dataStart = startCode + 4
+            val nextStartCode = findStartCode(payload, dataStart)
+            val dataEnd = if (nextStartCode >= 0) nextStartCode else payload.size
             if (dataStart < dataEnd) {
-                nalus.add(payload.copyOfRange(dataStart, dataEnd))
+                nalus.add(Nalu(payload, dataStart, dataEnd - dataStart))
             }
+            startCode = nextStartCode
         }
         return ParsedFrame(captureMs, sendMs, nalus)
     }
 
-    fun naluType(nalu: ByteArray): Int {
-        if (nalu.isEmpty()) return -1
-        return nalu[0].toInt() and 0x1F
-    }
+    fun naluType(nalu: Nalu): Int = nalu.type
 
-    private fun findStartCodes(payload: ByteArray): List<Int> {
-        val out = ArrayList<Int>()
-        var i = 0
+    private fun findStartCode(payload: ByteArray, from: Int): Int {
+        var i = from
         while (i + 3 < payload.size) {
             if (payload[i] == 0.toByte() &&
                 payload[i + 1] == 0.toByte() &&
                 payload[i + 2] == 0.toByte() &&
                 payload[i + 3] == 1.toByte()
             ) {
-                out.add(i)
-                i += 4
+                return i
             } else {
                 i++
             }
         }
-        return out
+        return -1
     }
 
     private fun extractDouble(json: String, key: String): Double? {

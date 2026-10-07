@@ -144,6 +144,11 @@ class TouchMapper(
         viewWidth = viewW
         viewHeight = viewH
 
+        if (handlePen(event)) return true
+
+        // Palm rejection: ignore fingers while the pen is down.
+        if (penDown) return true
+
         gestureDetector.onTouchEvent(event)
         scaleDetector.onTouchEvent(event)
 
@@ -239,6 +244,89 @@ class TouchMapper(
             }
         }
         return true
+    }
+
+    /** Stylus pointer currently down (id), or -1. */
+    private var penPointerId = -1
+    private val penDown: Boolean get() = penPointerId >= 0
+
+    private fun isPen(event: MotionEvent, index: Int): Boolean {
+        val t = event.getToolType(index)
+        return t == MotionEvent.TOOL_TYPE_STYLUS || t == MotionEvent.TOOL_TYPE_ERASER
+    }
+
+    /**
+     * Stylus always acts as a precise pointer (even while zoomed — fingers
+     * pan/zoom). Sends pressure/tilt/barrel alongside the normal touch phases.
+     * Returns true if the event was consumed by the pen path.
+     */
+    private fun handlePen(event: MotionEvent): Boolean {
+        val action = event.actionMasked
+        if (!penDown) {
+            val idx = event.actionIndex
+            val starts = (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) &&
+                isPen(event, idx)
+            if (!starts) return false
+            // Abort any in-flight finger gesture before the pen takes over.
+            if (macDragging && !multiFinger) sendMappedTouch(event, "cancelled")
+            multiFinger = false
+            panningViewport = false
+            macDragging = false
+            didMacScroll = false
+            midInitialized = false
+            penPointerId = event.getPointerId(idx)
+            sendPen(event, idx, "began")
+            return true
+        }
+        val idx = event.findPointerIndex(penPointerId)
+        when (action) {
+            MotionEvent.ACTION_MOVE -> if (idx >= 0) {
+                // Include batched historical samples for smooth strokes.
+                for (h in 0 until event.historySize) sendPenHistorical(event, idx, h)
+                sendPen(event, idx, "moved")
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP ->
+                if (idx >= 0 && (action == MotionEvent.ACTION_UP || idx == event.actionIndex)) {
+                    sendPen(event, idx, "ended")
+                    penPointerId = -1
+                }
+            MotionEvent.ACTION_CANCEL -> {
+                if (idx >= 0) sendPen(event, idx, "cancelled")
+                penPointerId = -1
+            }
+        }
+        return true
+    }
+
+    private fun penState(event: MotionEvent, idx: Int, pressure: Float, tilt: Float, azimuth: Float) =
+        ReceiverServer.PenState(
+            pressure = pressure.coerceIn(0f, 1f),
+            tilt = tilt,
+            azimuth = azimuth,
+            barrel = (event.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0,
+            eraser = event.getToolType(idx) == MotionEvent.TOOL_TYPE_ERASER,
+        )
+
+    private fun sendPen(event: MotionEvent, idx: Int, phase: String) {
+        val (nx, ny) = screenToNormalized(event.getX(idx), event.getY(idx))
+        val pen = penState(
+            event, idx,
+            event.getPressure(idx),
+            event.getAxisValue(MotionEvent.AXIS_TILT, idx),
+            event.getAxisValue(MotionEvent.AXIS_ORIENTATION, idx),
+        )
+        server.sendTouch(phase, nx, ny, pen)
+    }
+
+    private fun sendPenHistorical(event: MotionEvent, idx: Int, h: Int) {
+        val (nx, ny) = screenToNormalized(event.getHistoricalX(idx, h), event.getHistoricalY(idx, h))
+        val pen = penState(
+            event, idx,
+            event.getHistoricalPressure(idx, h),
+            event.getHistoricalAxisValue(MotionEvent.AXIS_TILT, idx, h),
+            event.getHistoricalAxisValue(MotionEvent.AXIS_ORIENTATION, idx, h),
+        )
+        server.sendTouch("moved", nx, ny, pen)
     }
 
     private fun handleTwoFingerMove(event: MotionEvent, viewW: Int, viewH: Int) {

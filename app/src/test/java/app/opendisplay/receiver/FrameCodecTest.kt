@@ -45,7 +45,7 @@ class FrameCodecTest {
         assertEquals(110.0, parsed.sendMs!!, 0.01)
         assertEquals(2, parsed.nalus.size)
         assertEquals(7, AnnexBParser.naluType(parsed.nalus[0]))
-        assertArrayEquals(slice, parsed.nalus[1])
+        assertArrayEquals(slice, parsed.nalus[1].copyBytes())
     }
 
     @Test

@@ -90,6 +90,9 @@ class ReceiverServer(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val writeMutex = Mutex()
+    // Guarded by writeMutex; reuse the buffer for every control/touch message.
+    private var outputSocket: Socket? = null
+    private var clientOutput: BufferedOutputStream? = null
     private val lastDataMs = AtomicLong(0)
     private val clientSocket = AtomicReference<Socket?>(null)
     private val audioPlayer = AudioPlayer()
@@ -293,17 +296,36 @@ class ReceiverServer(
         )
     }
 
-    fun sendTouch(phase: String, x: Double, y: Double) {
+    /**
+     * [pen] is optional stylus metadata; older Mac builds ignore the extra
+     * keys and treat the event as a plain touch.
+     */
+    fun sendTouch(phase: String, x: Double, y: Double, pen: PenState? = null) {
         scope.launch {
-            sendJson(
-                JSONObject()
-                    .put("type", WireMessage.TOUCH)
-                    .put("phase", phase)
-                    .put("x", x)
-                    .put("y", y),
-            )
+            val msg = JSONObject()
+                .put("type", WireMessage.TOUCH)
+                .put("phase", phase)
+                .put("x", x)
+                .put("y", y)
+            if (pen != null) {
+                msg.put("tool", if (pen.eraser) "eraser" else "stylus")
+                    .put("pressure", pen.pressure.toDouble())
+                    .put("tilt", pen.tilt.toDouble())
+                    .put("azimuth", pen.azimuth.toDouble())
+                    .put("barrel", pen.barrel)
+            }
+            sendJson(msg)
         }
     }
+
+    /** Stylus sample: pressure 0..1, tilt/azimuth radians, barrel = side button held. */
+    data class PenState(
+        val pressure: Float,
+        val tilt: Float,
+        val azimuth: Float,
+        val barrel: Boolean,
+        val eraser: Boolean,
+    )
 
     fun sendScroll(dx: Double, dy: Double) {
         scope.launch {
@@ -607,12 +629,19 @@ class ReceiverServer(
     }
 
     private suspend fun sendJson(obj: JSONObject) {
-        val socket = clientSocket.get() ?: return
         writeMutex.withLock {
+            val socket = clientSocket.get() ?: return
             try {
-                val out = BufferedOutputStream(socket.getOutputStream())
-                FrameCodec.writeJsonFrame(out, obj.toString())
+                if (outputSocket !== socket) {
+                    clientOutput = BufferedOutputStream(socket.getOutputStream())
+                    outputSocket = socket
+                }
+                FrameCodec.writeJsonFrame(clientOutput!!, obj.toString())
             } catch (e: Exception) {
+                // A failed flush can leave bytes in the buffer. Do not replay
+                // those bytes on the next message or retain a failed socket.
+                clientOutput = null
+                outputSocket = null
                 Log.w(tag, "send failed: ${e.message}")
             }
         }

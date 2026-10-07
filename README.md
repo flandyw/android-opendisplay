@@ -55,6 +55,7 @@ on those networks.
 **Input & audio**
 
 - Touch click / drag / two-finger scroll; pinch-zoom
+- Stylus: pen always acts as a pointer (pressure, tilt, barrel button sent as optional `touch` fields; palm rejection while the pen is down). Pressure/tilt need Mac-app support; older Macs treat it as a plain click/drag.
 - Mac cursor overlay
 - System audio to device speakers when enabled on the Mac
 

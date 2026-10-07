@@ -36,6 +36,7 @@ class H264Decoder(
     private var configureAttempts = 0
     private var consecutiveInputDrops = 0
     private var lastKeyframeRequestMs = 0L
+    private val outputInfo = MediaCodec.BufferInfo()
 
     private val framesIn = AtomicLong(0)
     private val framesOut = AtomicLong(0)
@@ -67,6 +68,7 @@ class H264Decoder(
         )
     }
 
+    @Synchronized
     fun setSurface(surface: Surface?) {
         if (this.surface === surface && surface != null) return
         this.surface = surface
@@ -83,6 +85,7 @@ class H264Decoder(
      * to configure: frames arrived but [configure] returned early → black
      * tablet until the TextureView was recreated.
      */
+    @Synchronized
     fun resetForNewSession() {
         releaseCodecOnly()
         configured = false
@@ -97,34 +100,26 @@ class H264Decoder(
         feedParsed(AnnexBParser.parse(payload))
     }
 
+    @Synchronized
     fun feedParsed(parsed: AnnexBParser.ParsedFrame) {
         if (released.get()) return
 
         val feedStartNs = System.nanoTime()
         var formatChanged = false
-        val vcl = ArrayList<ByteArray>()
-        var hasIdr = false
-
         for (nalu in parsed.nalus) {
-            when (val t = AnnexBParser.naluType(nalu)) {
+            when (nalu.type) {
                 7 -> { // SPS
-                    if (sps == null || !sps.contentEquals(nalu)) {
-                        sps = nalu
+                    if (!nalu.contentEquals(sps)) {
+                        sps = nalu.copyBytes()
                         formatChanged = true
                     }
                 }
                 8 -> { // PPS
-                    if (pps == null || !pps.contentEquals(nalu)) {
-                        pps = nalu
+                    if (!nalu.contentEquals(pps)) {
+                        pps = nalu.copyBytes()
                         formatChanged = true
                     }
                 }
-                6 -> Unit // SEI
-                5 -> {
-                    hasIdr = true
-                    vcl.add(nalu)
-                }
-                else -> vcl.add(nalu)
             }
         }
 
@@ -142,10 +137,13 @@ class H264Decoder(
             }
         }
 
-        if (!configured || vcl.isEmpty()) return
+        if (!configured) return
 
-        val annexB = toAnnexB(vcl)
-        if (!queueInput(annexB, isIdr = hasIdr)) {
+        // Release ready output before asking for input: a codec can run out of
+        // input buffers while waiting for us to return its output buffers.
+        drainOutput()
+        if (!configured || parsed.decoderInputSize == 0) return
+        if (!queueInput(parsed)) {
             return
         }
         framesIn.incrementAndGet()
@@ -238,7 +236,7 @@ class H264Decoder(
     }
 
     /** @return true if the frame was queued */
-    private fun queueInput(annexB: ByteArray, isIdr: Boolean): Boolean {
+    private fun queueInput(parsed: AnnexBParser.ParsedFrame): Boolean {
         val c = codec ?: return false
         try {
             // Non-blocking: never stall the TCP read loop waiting on the codec.
@@ -249,7 +247,7 @@ class H264Decoder(
                 // After a few drops, demand an IDR — but rate-limit: a storm of
                 // kf messages clogs the control channel and makes the Mac
                 // re-key every frame (bitrate spikes / more drops).
-                if (consecutiveInputDrops >= 3 || isIdr) {
+                if (consecutiveInputDrops >= 3 || parsed.hasIdr) {
                     requestKeyframeThrottled()
                 }
                 if (consecutiveInputDrops == 1 || consecutiveInputDrops % 60 == 0) {
@@ -260,16 +258,16 @@ class H264Decoder(
             consecutiveInputDrops = 0
             val buf = c.getInputBuffer(inIndex) ?: return false
             buf.clear()
-            if (buf.remaining() < annexB.size) {
-                Log.w(tag, "input buffer too small ${buf.remaining()} < ${annexB.size}")
+            if (buf.remaining() < parsed.decoderInputSize) {
+                Log.w(tag, "input buffer too small ${buf.remaining()} < ${parsed.decoderInputSize}")
                 c.queueInputBuffer(inIndex, 0, 0, ptsUs, 0)
                 inputDrops.incrementAndGet()
                 requestKeyframeThrottled()
                 return false
             }
-            buf.put(annexB)
+            parsed.writeDecoderInput(buf)
             ptsUs += 16_666
-            c.queueInputBuffer(inIndex, 0, annexB.size, ptsUs, 0)
+            c.queueInputBuffer(inIndex, 0, parsed.decoderInputSize, ptsUs, 0)
             return true
         } catch (e: Exception) {
             Log.e(tag, "queueInput failed", e)
@@ -290,12 +288,11 @@ class H264Decoder(
 
     private fun drainOutput() {
         val c = codec ?: return
-        val info = MediaCodec.BufferInfo()
-        // Collect all ready buffers; render only the last for lower latency.
-        val pending = ArrayList<Int>(4)
+        // Keep only the newest ready buffer, returning older buffers promptly.
+        var pending = -1
         try {
             while (true) {
-                val outIndex = c.dequeueOutputBuffer(info, 0)
+                val outIndex = c.dequeueOutputBuffer(outputInfo, 0)
                 when {
                     outIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> break
                     outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
@@ -305,21 +302,24 @@ class H264Decoder(
                         Log.i(tag, "output format $w x $h")
                         onVideoSize(w, h)
                     }
-                    outIndex >= 0 -> pending.add(outIndex)
+                    outIndex >= 0 -> {
+                        if (pending >= 0) {
+                            c.releaseOutputBuffer(pending, false)
+                            outputDrops.incrementAndGet()
+                        }
+                        pending = outIndex
+                    }
                 }
             }
-            if (pending.isEmpty()) return
-            for (i in 0 until pending.lastIndex) {
-                c.releaseOutputBuffer(pending[i], false)
-                outputDrops.incrementAndGet()
-            }
-            c.releaseOutputBuffer(pending.last(), true)
+            if (pending < 0) return
+            c.releaseOutputBuffer(pending, true)
+            pending = -1
             framesOut.incrementAndGet()
         } catch (e: Exception) {
             Log.e(tag, "drainOutput failed", e)
-            for (idx in pending) {
+            if (pending >= 0) {
                 try {
-                    c.releaseOutputBuffer(idx, false)
+                    c.releaseOutputBuffer(pending, false)
                 } catch (_: Exception) {
                 }
             }
@@ -329,6 +329,7 @@ class H264Decoder(
         }
     }
 
+    @Synchronized
     fun release() {
         if (!released.compareAndSet(false, true)) return
         releaseCodecOnly()
@@ -354,22 +355,6 @@ class H264Decoder(
         out[2] = 0
         out[3] = 1
         System.arraycopy(nalu, 0, out, 4, nalu.size)
-        return out
-    }
-
-    private fun toAnnexB(nalus: List<ByteArray>): ByteArray {
-        var size = 0
-        for (n in nalus) size += 4 + n.size
-        val out = ByteArray(size)
-        var o = 0
-        for (n in nalus) {
-            out[o++] = 0
-            out[o++] = 0
-            out[o++] = 0
-            out[o++] = 1
-            System.arraycopy(n, 0, out, o, n.size)
-            o += n.size
-        }
         return out
     }
 
