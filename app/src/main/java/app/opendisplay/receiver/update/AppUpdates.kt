@@ -21,6 +21,7 @@ data class UpdateState(
     val downloading: AppUpdate? = null,
     val progress: UpdateDownloadProgress = UpdateDownloadProgress(),
     val message: String? = null,
+    val source: UpdateSource = UpdateSource.SERVER,
 ) {
     val busy get() = initializing || checking || downloading != null
     val downloadCandidate get() = available?.takeIf { it.versionCode > (ready?.update?.versionCode ?: 0) }
@@ -32,7 +33,7 @@ class AppUpdates(private val context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val supported = context.packageName == RELEASE_PACKAGE
-    private val mutableState = MutableStateFlow(UpdateState(supported = supported, initializing = supported))
+    private val mutableState = MutableStateFlow(UpdateState(supported = supported, initializing = supported, source = loadSource()))
     val state = mutableState.asStateFlow()
 
     private val initialized = scope.async {
@@ -50,6 +51,17 @@ class AppUpdates(private val context: Context) {
     var autoCheck: Boolean
         get() = prefs.getBoolean(KEY_AUTO_CHECK, true)
         set(value) { prefs.edit().putBoolean(KEY_AUTO_CHECK, value).apply() }
+
+    private fun loadSource() = runCatching { UpdateSource.valueOf(prefs.getString(KEY_SOURCE, null) ?: "") }
+        .getOrDefault(UpdateSource.SERVER)
+
+    /** Switching sources forgets the offered build and any cooldown, since both belong to the old source. */
+    fun setSource(source: UpdateSource) {
+        if (state.value.busy || source == state.value.source) return
+        prefs.edit().putString(KEY_SOURCE, source.name).remove(KEY_LAST_CHECK).remove(KEY_RETRY_AT).apply()
+        mutableState.update { it.copy(source = source, available = null, message = null) }
+        check(manual = false)
+    }
 
     fun message(value: String) { mutableState.update { it.copy(message = value) } }
 
@@ -69,7 +81,7 @@ class AppUpdates(private val context: Context) {
         scope.launch {
             try {
                 awaitReady()
-                val result = withContext(Dispatchers.IO) { checker.check() }
+                val result = withContext(Dispatchers.IO) { checker.check(state.value.source) }
                 prefs.edit().putLong(KEY_LAST_CHECK, System.currentTimeMillis()).remove(KEY_RETRY_AT).apply()
                 mutableState.update { it.copy(available = result, message = if (manual) {
                     when {
@@ -140,5 +152,6 @@ class AppUpdates(private val context: Context) {
         const val KEY_AUTO_CHECK = "autoCheck"
         const val KEY_LAST_CHECK = "lastCheck"
         const val KEY_RETRY_AT = "retryAt"
+        const val KEY_SOURCE = "source"
     }
 }

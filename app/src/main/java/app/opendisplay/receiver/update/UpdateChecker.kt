@@ -19,7 +19,7 @@ internal class UpdateHttpException(
 data class UpdateDownloadProgress(val percent: Int? = null, val bytesPerSecond: Long = 0, val verifying: Boolean = false)
 data class DownloadedUpdate(val update: AppUpdate, val file: File)
 
-/** Talks to the OpenDisplay release server only; every URL and redirect must stay on its host. */
+/** Talks to the selected [UpdateSource] only; every URL and redirect must stay on its trusted hosts. */
 class UpdateChecker(private val context: Context) {
     private val directory get() = File(context.noBackupFilesDir, "updates").apply { mkdirs() }
     private val record get() = AtomicFile(File(directory, "ready.json"))
@@ -60,14 +60,14 @@ class UpdateChecker(private val context: Context) {
     }
 
     /** Returns a newer build, or null when up to date (or nothing is published yet). */
-    fun check(): AppUpdate? {
+    fun check(source: UpdateSource = UpdateSource.SERVER): AppUpdate? {
         val release = try {
-            JSONObject(getText(UPDATE_MANIFEST_URL))
+            JSONObject(getText(if (source == UpdateSource.GITHUB) GITHUB_LATEST_URL else UPDATE_MANIFEST_URL, source))
         } catch (error: UpdateHttpException) {
             if (error.code == 404) return null
             throw error
         }
-        return decodeUpdateRelease(release, installedVersionCode())
+        return decodeUpdateRelease(release, installedVersionCode(), source)
     }
 
     /** Downloads to a temporary file, checks SHA-256, then atomically exposes the APK to the UI. */
@@ -78,7 +78,7 @@ class UpdateChecker(private val context: Context) {
         temporary.delete()
         try {
             val expected = checksum(update).lowercase()
-            downloadTo(update.apkUrl, temporary, onProgress)
+            downloadTo(update.apkUrl, update.source, temporary, onProgress)
             onProgress(UpdateDownloadProgress(100, verifying = true))
             if (sha256(temporary) != expected) throw IOException("The downloaded update failed its checksum")
             if (target.exists() && !target.delete()) throw IOException("Couldn't replace the previous update")
@@ -93,15 +93,15 @@ class UpdateChecker(private val context: Context) {
     }
 
     private fun checksum(update: AppUpdate): String {
-        val line = getText(update.checksumUrl).lineSequence()
+        val line = getText(update.checksumUrl, update.source).lineSequence()
             .firstOrNull { it.trim().endsWith("  ${update.apkName}") || it.trim().endsWith(" *${update.apkName}") }
             ?: throw IOException("The release checksum does not name its APK")
         return line.trim().split(Regex("\\s+")).firstOrNull()?.takeIf { it.matches(Regex("[0-9a-fA-F]{64}")) }
             ?: throw IOException("The release checksum is invalid")
     }
 
-    private fun downloadTo(url: String, target: File, onProgress: (UpdateDownloadProgress) -> Unit) {
-        val connection = open(url)
+    private fun downloadTo(url: String, source: UpdateSource, target: File, onProgress: (UpdateDownloadProgress) -> Unit) {
+        val connection = open(url, source)
         try {
             val total = connection.contentLengthLong
             if (total > MAX_APK_BYTES) throw IOException("The update is unexpectedly large")
@@ -132,8 +132,8 @@ class UpdateChecker(private val context: Context) {
         }
     }
 
-    private fun getText(url: String): String {
-        val connection = open(url)
+    private fun getText(url: String, source: UpdateSource): String {
+        val connection = open(url, source)
         return try {
             connection.inputStream.bufferedReader().use { it.readText() }
         } finally {
@@ -141,8 +141,8 @@ class UpdateChecker(private val context: Context) {
         }
     }
 
-    private fun open(url: String): HttpURLConnection {
-        require(isTrustedUpdateUrl(url)) { "Untrusted update URL" }
+    private fun open(url: String, source: UpdateSource): HttpURLConnection {
+        require(isTrustedUpdateUrl(url, source)) { "Untrusted update URL" }
         var current = url
         var redirects = 0
         while (true) {
@@ -152,7 +152,7 @@ class UpdateChecker(private val context: Context) {
                 // Every redirect must stay on the release host.
                 instanceFollowRedirects = false
                 requestMethod = "GET"
-                setRequestProperty("Accept", "application/json")
+                setRequestProperty("Accept", if (source == UpdateSource.GITHUB) "application/vnd.github+json, application/octet-stream" else "application/json")
                 setRequestProperty("User-Agent", "OpenDisplay/${installedVersionName()}")
             }
             connection.connect()
@@ -161,7 +161,7 @@ class UpdateChecker(private val context: Context) {
                 val location = connection.getHeaderField("Location")
                 connection.disconnect()
                 val next = location?.let { runCatching { URL(URL(current), it).toString() }.getOrNull() }
-                if (next != null && isTrustedUpdateUrl(next)) {
+                if (next != null && isTrustedUpdateUrl(next, source)) {
                     current = next
                     redirects++
                     continue

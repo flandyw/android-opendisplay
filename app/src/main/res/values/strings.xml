@@ -20,6 +20,9 @@
     <string name="updates_button_available">Update available</string>
     <string name="updates_unsupported">Updates are only offered in the release build.</string>
     <string name="updates_auto">Check on launch</string>
+    <string name="updates_source">Update source</string>
+    <string name="updates_source_server">Release server</string>
+    <string name="updates_source_github">GitHub Releases</string>
     <string name="updates_check">Check for updates</string>
     <string name="updates_loading">Loading downloaded update…</string>
     <string name="updates_checking">Checking for updates…</string>

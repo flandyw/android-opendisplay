@@ -222,6 +222,7 @@ class MainActivity : ComponentActivity() {
                     state = updateState,
                     autoCheck = autoCheck,
                     onAutoCheck = { autoCheck = it; app.updates.autoCheck = it },
+                    onSource = app.updates::setSource,
                     onCheck = { app.updates.check(manual = true) },
                     onDownload = app.updates::download,
                     onInstall = app.updates::install,

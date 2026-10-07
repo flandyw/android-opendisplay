@@ -82,4 +82,35 @@ class UpdateReleaseTest {
         assertEquals(31_000L, updateRetryAtMillis(429, 30, 1_000))
         assertEquals(1_000 + UPDATE_FAILURE_RETRY_MILLIS, updateRetryAtMillis(503, null, 1_000))
     }
+
+    private val gh = "https://github.com/flandyw/android-opendisplay/releases/download/v25.5.1/"
+    private fun githubRelease(tag: String = "v25.5.1", apkUrl: String = gh + "OpenDisplay-25.5.1.apk") = JSONObject("""{
+        "tag_name": "$tag", "html_url": "https://github.com/flandyw/android-opendisplay/releases/tag/$tag",
+        "draft": false, "prerelease": false,
+        "assets": [
+          {"name": "OpenDisplay-25.5.1.apk", "browser_download_url": "$apkUrl"},
+          {"name": "OpenDisplay-25.5.1.dmg", "browser_download_url": "${gh}OpenDisplay-25.5.1.dmg"},
+          {"name": "SHA256SUMS", "browser_download_url": "${gh}SHA256SUMS"}
+        ]}""")
+
+    @Test fun githubReleaseDerivesVersionFromTag() {
+        val update = decodeUpdateRelease(githubRelease(), 2_551L * 10_000 - 1, UpdateSource.GITHUB)!!
+        assertEquals(2_551L * 10_000, update.versionCode)
+        assertEquals("25.5.1", update.versionName)
+        assertEquals("OpenDisplay-25.5.1.apk", update.apkName)
+        assertEquals(UpdateSource.GITHUB, update.source)
+        assertNull(decodeUpdateRelease(githubRelease(), 2_551L * 10_000, UpdateSource.GITHUB))
+        assertThrows(IOException::class.java) { decodeUpdateRelease(githubRelease(tag = "nightly"), 1, UpdateSource.GITHUB) }
+    }
+
+    @Test fun githubTrustIsScopedToTheRepository() {
+        assertTrue(isTrustedUpdateUrl(GITHUB_LATEST_URL, UpdateSource.GITHUB))
+        assertTrue(isTrustedUpdateUrl(gh + "SHA256SUMS", UpdateSource.GITHUB))
+        assertTrue(isTrustedUpdateUrl("https://release-assets.githubusercontent.com/x", UpdateSource.GITHUB))
+        assertFalse(isTrustedUpdateUrl("https://github.com/evil/repo/releases/download/v1/a.apk", UpdateSource.GITHUB))
+        assertFalse(isTrustedUpdateUrl(gh + "SHA256SUMS", UpdateSource.SERVER))
+        assertThrows(IllegalArgumentException::class.java) {
+            decodeUpdateRelease(githubRelease(apkUrl = "https://github.com/evil/repo/OpenDisplay-25.5.1.apk"), 1, UpdateSource.GITHUB)
+        }
+    }
 }

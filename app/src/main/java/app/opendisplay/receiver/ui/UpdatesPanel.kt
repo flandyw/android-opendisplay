@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -21,6 +22,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import app.opendisplay.receiver.R
 import app.opendisplay.receiver.update.AppUpdate
+import app.opendisplay.receiver.update.UpdateSource
 import app.opendisplay.receiver.update.UpdateState
 import java.util.Locale
 
@@ -29,6 +31,7 @@ class UpdatesUi(
     val state: UpdateState,
     val autoCheck: Boolean,
     val onAutoCheck: (Boolean) -> Unit,
+    val onSource: (UpdateSource) -> Unit,
     val onCheck: () -> Unit,
     val onDownload: (AppUpdate) -> Unit,
     val onInstall: () -> Unit,
@@ -49,6 +52,17 @@ internal fun UpdatesContent(ui: UpdatesUi) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(stringResource(R.string.updates_auto), Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
             Switch(checked = ui.autoCheck, onCheckedChange = ui.onAutoCheck)
+        }
+        Text(stringResource(R.string.updates_source), style = MaterialTheme.typography.labelLarge)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for ((source, label) in listOf(UpdateSource.SERVER to R.string.updates_source_server, UpdateSource.GITHUB to R.string.updates_source_github)) {
+                FilterChip(
+                    selected = state.source == source,
+                    onClick = { ui.onSource(source) },
+                    enabled = !state.busy,
+                    label = { Text(stringResource(label)) },
+                )
+            }
         }
         when {
             state.downloading != null -> {
