@@ -98,35 +98,30 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.3'
-          bundler-cache: true
-          working-directory: opendisplay
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate project
-        env:
-          DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
         run: xcodegen generate
-      - name: Set up SSH for match certs repo
-        uses: webfactory/ssh-agent@v0.10.0
-        with:
-          ssh-private-key: ${{ secrets.MATCH_DEPLOY_KEY }}
-      - name: Build notarized macOS app
+      # No Apple Developer account: the app is ad-hoc signed, not notarized.
+      # Users open it via right-click > Open (or `xattr -cr OpenDisplay.app`).
+      - name: Build ad-hoc signed app
         env:
-          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
-          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          APP_STORE_CONNECT_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_KEY_CONTENT }}
-          DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
           APP_MARKETING_VERSION: ${{ needs.version.outputs.name }}
           APP_BUILD_NUMBER: ${{ needs.version.outputs.count }}
         run: |
-          bundle exec fastlane mac build_release
-          mkdir -p ../dist
-          cp build/export/OpenDisplay.dmg "../dist/OpenDisplay-${APP_MARKETING_VERSION}.dmg"
+          set -euo pipefail
+          xcodebuild -project OpenSidecar.xcodeproj -scheme OpenSidecarMac \
+            -configuration Release -derivedDataPath build/derived \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
+            MARKETING_VERSION="$APP_MARKETING_VERSION" CURRENT_PROJECT_VERSION="$APP_BUILD_NUMBER" \
+            build
+          app="build/derived/Build/Products/Release/OpenDisplay.app"
+          codesign --verify --deep --strict "$app"
+          rm -rf build/dmg-src && mkdir -p build/dmg-src ../dist
+          cp -R "$app" build/dmg-src/
+          ln -s /Applications build/dmg-src/Applications
+          hdiutil create -volname OpenDisplay -srcfolder build/dmg-src -ov -format UDZO \
+            "../dist/OpenDisplay-$APP_MARKETING_VERSION.dmg"
       - uses: actions/upload-artifact@v4
         with:
           name: macos
