@@ -16,6 +16,9 @@ import android.view.TextureView
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.view.KeyCharacterMap
+import app.opendisplay.receiver.input.HardwareKeyForwarder
+import app.opendisplay.receiver.ui.DesktopInputView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -152,7 +155,14 @@ class MainActivity : ComponentActivity() {
     @Volatile private var holdSurfaceTexture: SurfaceTexture? = null
     @Volatile private var holdSurface: Surface? = null
     @Volatile private var latestViewport: TouchMapper.Viewport = TouchMapper.Viewport()
+    private var macCursorX = 0.5
+    private var macCursorY = 0.5
     private lateinit var controls: InputControls
+    private lateinit var hardwareKeys: HardwareKeyForwarder
+    private var inputView: DesktopInputView? = null
+    private var deadAccent = 0
+    private var localInputActive = false
+    private var captureRequest = 0
     /** Shared by the video touch path and the sidebar so both ignore a resting hand. */
     private val palmGuard = PalmGuard()
     private lateinit var stylusShortcuts: StylusShortcutManager
@@ -231,6 +241,9 @@ class MainActivity : ComponentActivity() {
         controls = InputControls(
             rightSide = prefs.getBoolean(KEY_SIDEBAR_RIGHT, false),
             palmReject = prefs.getBoolean(KEY_PALM_REJECT, true),
+            controlIsCommand = prefs.getBoolean(KEY_CONTROL_COMMAND, false),
+            reverseScroll = prefs.getBoolean(KEY_REVERSE_SCROLL, false),
+            pointerSpeed = prefs.getFloat(KEY_POINTER_SPEED, 1f),
         )
         palmGuard.enabled = controls.ui.value.palmReject
         watchKeyboardVisibility()
@@ -291,6 +304,8 @@ class MainActivity : ComponentActivity() {
             },
             decoder = decoder,
             onCursor = { x, y, visible ->
+                macCursorX = x
+                macCursorY = y
                 val vp = latestViewport
                 if (vp.scale <= 1.05f || vp.contentW <= 0.001f || vp.contentH <= 0.001f) {
                     cursorView?.setCursorPosition(x, y, visible)
@@ -331,7 +346,12 @@ class MainActivity : ComponentActivity() {
             pairToken = { pairTokens.tokenFor(server.reverseMac?.name) },
             onPairToken = { token -> pairTokens.save(server.reverseMac?.name, token) },
         )
-        touchMapper = TouchMapper(this, server, controls, onHaptic = ::haptic, palm = palmGuard) { viewport ->
+        hardwareKeys = HardwareKeyForwarder(controls, server::sendKey)
+        touchMapper = TouchMapper(this, server, controls, onHaptic = ::haptic, palm = palmGuard,
+            onPointerEcho = { x, y ->
+                val vp = latestViewport
+                cursorView?.setCursorPosition((x - vp.contentX) / vp.contentW, (y - vp.contentY) / vp.contentH, true)
+            }) { viewport ->
             latestViewport = viewport
             controls.setZoomed(viewport.scale > 1.01f)
             applyViewport(viewport)
@@ -388,6 +408,9 @@ class MainActivity : ComponentActivity() {
                 val hud by server.hud.collectAsState()
                 val caps by server.caps.collectAsState()
                 // A fresh Mac session knows nothing of our zoom; say it again.
+                LaunchedEffect(state.streaming) {
+                    if (!state.streaming) releaseDesktopInput()
+                }
                 LaunchedEffect(caps) {
                     if (caps.isNotEmpty()) touchMapper.resendViewport()
                 }
@@ -401,6 +424,7 @@ class MainActivity : ComponentActivity() {
                 }
                 LaunchedEffect(showStream) {
                     if (!showStream) {
+                        releaseDesktopInput()
                         keyboardView?.hideKeyboard()
                         if (controls.ui.value.zoomed) touchMapper.resetViewport()
                         controls.endSession()
@@ -450,6 +474,25 @@ class MainActivity : ComponentActivity() {
                             },
                             palm = palmGuard,
                             onKeyboard = ::setKeyboard,
+                            pointerEnabled = WireCaps.HOVER in caps,
+                            onCapturePointer = ::setPointerCapture,
+                            onControlIsCommand = { on ->
+                                hardwareKeys.releaseAll()
+                                controls.setControlIsCommand(on)
+                                prefs.edit().putBoolean(KEY_CONTROL_COMMAND, on).apply()
+                            },
+                            onReverseScroll = { on ->
+                                controls.setReverseScroll(on)
+                                prefs.edit().putBoolean(KEY_REVERSE_SCROLL, on).apply()
+                            },
+                            onPointerSpeed = { speed ->
+                                controls.setPointerSpeed(speed)
+                                prefs.edit().putFloat(KEY_POINTER_SPEED, speed).apply()
+                            },
+                            onLocalInput = { local ->
+                                localInputActive = local
+                                if (local) hardwareKeys.releaseAll()
+                            },
                             onZoomReset = touchMapper::resetViewport,
                             onRightSide = { right ->
                                 controls.setRightSide(right)
@@ -471,6 +514,14 @@ class MainActivity : ComponentActivity() {
                         KeyboardCaptureView(context, textForwarder, ::forwardSoftKey)
                             .also { keyboardView = it }
                     },
+                    onBindInput = { view ->
+                        inputView = view
+                        view?.onCaptureChanged = { captured ->
+                            controls.setPointerCaptured(captured)
+                            if (captured) touchMapper.seedPointer(macCursorX, macCursorY) else touchMapper.releaseInputs()
+                        }
+                    },
+                    onCapturedPointer = { event, w, h -> touchMapper.onCapturedPointer(event, w, h) },
                     onBindViews = { texture, cursor ->
                         videoView = texture
                         cursorView = cursor
@@ -558,6 +609,7 @@ class MainActivity : ComponentActivity() {
     /** End the display session and return to the connection page. */
     private fun returnToMain() {
         if (returningToMain.value) return
+        releaseDesktopInput()
         returningToMain.value = true
         launchAutoConnect.cancel()
         keyboardView?.hideKeyboard()
@@ -746,7 +798,14 @@ class MainActivity : ComponentActivity() {
      * System keys (back, volume, power, …) are left to Android.
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (::server.isInitialized && uiState.value.streaming && server.hasCap(WireCaps.KEY) &&
+        // This local escape chord works even while Android owns the mouse capture.
+        if (::server.isInitialized && uiState.value.streaming && event.isCtrlPressed && event.isAltPressed &&
+            event.keyCode == KeyEvent.KEYCODE_DEL
+        ) {
+            if (event.action == KeyEvent.ACTION_DOWN) releaseDesktopInput()
+            return true
+        }
+        if (::server.isInitialized && uiState.value.streaming && !localInputActive && server.hasCap(WireCaps.KEY) &&
             forwardKey(event)
         ) {
             return true
@@ -758,7 +817,57 @@ class MainActivity : ComponentActivity() {
         // Soft-keyboard / virtual devices stay with Android.
         val device = event.device ?: return false
         if (device.isVirtual || event.source and InputDevice.SOURCE_KEYBOARD == 0) return false
-        return sendMappedKey(event)
+        val down = event.action == KeyEvent.ACTION_DOWN
+        if (!down && event.action != KeyEvent.ACTION_UP) return false
+        var chars: String? = null
+        val mods = Mods.remapControl(Mods.fromMetaState(event.metaState), controls.ui.value.controlIsCommand)
+        if (down && MacKeys.modifierFor(MacKeys.fromAndroid(event.keyCode) ?: -1) == 0) {
+            if (mods and (Mods.CMD or Mods.CTRL) != 0) deadAccent = 0 else {
+                val cp = event.unicodeChar
+                if (cp and KeyCharacterMap.COMBINING_ACCENT != 0) {
+                    deadAccent = cp and KeyCharacterMap.COMBINING_ACCENT_MASK
+                    return true
+                }
+                if (cp > 0) {
+                    val combined = if (deadAccent != 0) KeyCharacterMap.getDeadChar(deadAccent, cp) else cp
+                    chars = if (combined > 0) String(Character.toChars(combined)) else
+                        String(Character.toChars(deadAccent)) + String(Character.toChars(cp))
+                    deadAccent = 0
+                }
+            }
+        }
+        return hardwareKeys.key(event.deviceId, event.keyCode, down, Mods.fromMetaState(event.metaState),
+            chars, down && event.repeatCount > 0)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) releaseDesktopInput()
+    }
+
+    private fun releaseDesktopInput() {
+        captureRequest++
+        inputView?.releasePointerCapture()
+        if (::hardwareKeys.isInitialized) hardwareKeys.releaseAll()
+        if (::touchMapper.isInitialized) touchMapper.releaseInputs()
+        if (::controls.isInitialized) controls.setPointerCaptured(false)
+        deadAccent = 0
+    }
+
+    private fun setPointerCapture(capture: Boolean) {
+        if (!capture) { releaseDesktopInput(); return }
+        if (!uiState.value.streaming || !server.hasCap(WireCaps.HOVER)) return
+        val request = ++captureRequest
+        keyboardView?.hideKeyboard()
+        inputView?.let { view ->
+            view.requestFocus()
+            view.postDelayed({
+                if (captureRequest == request && view.hasWindowFocus() && uiState.value.streaming && inputView === view) {
+                    view.requestFocus()
+                    view.requestPointerCapture()
+                }
+            }, 200)
+        }
     }
 
     /** Enter / Backspace / arrows from the on-screen keyboard. */
@@ -810,6 +919,7 @@ class MainActivity : ComponentActivity() {
 
     /** Show or hide the system keyboard; its text goes to the Mac. */
     private fun setKeyboard(on: Boolean) {
+        if (on) inputView?.releasePointerCapture()
         controls.setKeyboard(on)
         if (on) keyboardView?.showKeyboard() else keyboardView?.hideKeyboard()
     }
@@ -852,6 +962,9 @@ private const val KEY_SIDEBAR_RIGHT = "sidebarRight"
 private const val KEY_HINT_SEEN = "streamHintSeen"
 private const val KEY_MAC_ADDRESS = "macAddress"
 private const val KEY_PALM_REJECT = "palmReject"
+private const val KEY_CONTROL_COMMAND = "controlIsCommand"
+private const val KEY_REVERSE_SCROLL = "reversePointerScroll"
+private const val KEY_POINTER_SPEED = "pointerSpeed"
 private const val KEY_AUTO_CONNECT = "autoConnectLastMac"
 private const val KEY_LAST_MAC_NAME = "lastMacName"
 private const val KEY_LAST_MAC_HOST = "lastMacHost"
@@ -877,6 +990,8 @@ private fun ReceiverScreen(
     onAutoConnect: (Boolean) -> Unit,
     createKeyboardView: (Context) -> View,
     onBindViews: (TextureView?, CursorOverlayView?) -> Unit,
+    onBindInput: (DesktopInputView?) -> Unit,
+    onCapturedPointer: (MotionEvent, Int, Int) -> Boolean,
     onSurfaceReady: (Surface) -> Unit,
     onSurfaceDestroyed: () -> Unit,
     onTouch: (android.view.MotionEvent, Int, Int) -> Boolean,
@@ -923,8 +1038,13 @@ private fun ReceiverScreen(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 )
-                FrameLayout(context).apply {
+                DesktopInputView(context).apply {
                     layoutParams = match
+                    onBindInput(this)
+                    showRemotePointer(streaming)
+                    setOnCapturedPointerListener { v, event ->
+                        if (streaming) onCapturedPointer(event, v.width, v.height) else true
+                    }
                     val texture = TextureView(context).apply {
                         layoutParams = FrameLayout.LayoutParams(match)
                         surfaceTextureListener = object : TextureView.SurfaceTextureListener {
@@ -982,7 +1102,10 @@ private fun ReceiverScreen(
                     }
                 }
             },
+            update = { it.showRemotePointer(streaming) },
             onRelease = {
+                it.releasePointerCapture()
+                onBindInput(null)
                 onBindViews(null, null)
             },
         )

@@ -26,6 +26,11 @@ data class ControlsUi(
     val eraser: Boolean = false,
     /** Ignore a resting palm while the stylus is in use. */
     val palmReject: Boolean = true,
+    val controlIsCommand: Boolean = false,
+    val reverseScroll: Boolean = false,
+    val pointerSpeed: Float = 1f,
+    /** Actual capture state, cleared on focus loss; never persisted. */
+    val pointerCaptured: Boolean = false,
 )
 
 /**
@@ -33,11 +38,21 @@ data class ControlsUi(
  * hardware-key path. Modifiers tapped on the sidebar are one-shot (cleared
  * after the next click or key); a long-press locks them.
  */
-class InputControls(rightSide: Boolean = false, palmReject: Boolean = true) {
-    private val state = MutableStateFlow(ControlsUi(rightSide = rightSide, palmReject = palmReject))
+class InputControls(
+    rightSide: Boolean = false,
+    palmReject: Boolean = true,
+    controlIsCommand: Boolean = false,
+    reverseScroll: Boolean = false,
+    pointerSpeed: Float = 1f,
+) {
+    private val state = MutableStateFlow(ControlsUi(
+        rightSide = rightSide, palmReject = palmReject, controlIsCommand = controlIsCommand,
+        reverseScroll = reverseScroll, pointerSpeed = pointerSpeed.coerceIn(0.5f, 2f),
+    ))
     val ui: StateFlow<ControlsUi> = state
 
-    val activeMods: Int get() = state.value.let { it.oneShotMods or it.lockedMods }
+    var hardwareMods: Int = 0
+    val activeMods: Int get() = state.value.let { it.oneShotMods or it.lockedMods or hardwareMods }
     val penOnly: Boolean get() = state.value.penOnly
     val eraser: Boolean get() = state.value.eraser
 
@@ -82,9 +97,17 @@ class InputControls(rightSide: Boolean = false, palmReject: Boolean = true) {
     fun setEraser(on: Boolean) = state.update { it.copy(eraser = on) }
     fun toggleEraser() = state.update { it.copy(eraser = !it.eraser) }
     fun setPalmReject(on: Boolean) = state.update { it.copy(palmReject = on) }
+    fun setControlIsCommand(on: Boolean) = state.update { it.copy(controlIsCommand = on) }
+    fun setReverseScroll(on: Boolean) = state.update { it.copy(reverseScroll = on) }
+    fun setPointerSpeed(speed: Float) = state.update { it.copy(pointerSpeed = speed.coerceIn(0.5f, 2f)) }
+    fun setPointerCaptured(on: Boolean) = state.update { it.copy(pointerCaptured = on) }
 
     /** The stream is gone for good: drop everything that only made sense while it ran. */
-    fun endSession() = state.update {
-        ControlsUi(penOnly = it.penOnly, hud = it.hud, rightSide = it.rightSide, palmReject = it.palmReject)
+    fun endSession() {
+        hardwareMods = 0
+        state.update {
+            ControlsUi(penOnly = it.penOnly, hud = it.hud, rightSide = it.rightSide, palmReject = it.palmReject,
+                controlIsCommand = it.controlIsCommand, reverseScroll = it.reverseScroll, pointerSpeed = it.pointerSpeed)
+        }
     }
 }

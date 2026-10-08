@@ -40,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -118,6 +119,12 @@ fun SidebarOverlay(
     onPalmReject: (Boolean) -> Unit,
     palm: PalmGuard,
     onKeyboard: (Boolean) -> Unit,
+    pointerEnabled: Boolean,
+    onCapturePointer: (Boolean) -> Unit,
+    onControlIsCommand: (Boolean) -> Unit,
+    onReverseScroll: (Boolean) -> Unit,
+    onPointerSpeed: (Float) -> Unit,
+    onLocalInput: (Boolean) -> Unit,
     onZoomReset: () -> Unit,
     onRightSide: (Boolean) -> Unit,
     onExpanded: (Boolean) -> Unit,
@@ -126,9 +133,19 @@ fun SidebarOverlay(
 ) {
     val scroll = rememberScrollState()
     var moreOpen by remember { mutableStateOf(false) }
+    var inputSettingsOpen by remember { mutableStateOf(false) }
     val haptic = onHaptic
     LaunchedEffect(ui.expanded) {
         if (!ui.expanded) moreOpen = false
+    }
+    DisposableEffect(moreOpen, inputSettingsOpen) {
+        onLocalInput(moreOpen || inputSettingsOpen)
+        onDispose { onLocalInput(false) }
+    }
+    if (inputSettingsOpen) {
+        DesktopInputSettings(ui, keyEnabled, onControlIsCommand, onReverseScroll, onPointerSpeed) {
+            inputSettingsOpen = false
+        }
     }
 
     val right = ui.rightSide
@@ -139,6 +156,12 @@ fun SidebarOverlay(
     val towardEdge = if (right) 1 else -1
 
     BoxWithConstraints(Modifier.fillMaxSize().ignorePalms(palm)) {
+        if (ui.pointerCaptured) {
+            Text(stringResource(R.string.desktop_capture_active), color = Color.White,
+                fontSize = 12.sp, modifier = Modifier.align(Alignment.BottomCenter)
+                    .padding(bottom = 8.dp).clip(RoundedCornerShape(8.dp))
+                    .background(PanelColor).padding(horizontal = 10.dp, vertical = 4.dp))
+        }
         // Keep every 48dp touch target reachable on short landscape screens.
         // On tablets the two flexible gaps reproduce the reference grouping.
         val railHeight = maxHeight.coerceAtLeast(560.dp)
@@ -231,6 +254,17 @@ fun SidebarOverlay(
                             onExpanded(false)
                         }
                         DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
+                            MoreItem(R.string.desktop_input_settings) {
+                                moreOpen = false
+                                onCapturePointer(false)
+                                inputSettingsOpen = true
+                            }
+                            if (pointerEnabled) {
+                                MoreItem(if (ui.pointerCaptured) R.string.desktop_release_pointer else R.string.desktop_capture_pointer) {
+                                    moreOpen = false
+                                    onCapturePointer(!ui.pointerCaptured)
+                                }
+                            }
                             if (keyEnabled) {
                                 MoreItem(R.string.sidebar_escape) { onShortcut(MacKeys.ESCAPE, 0) }
                                 MoreItem(R.string.sidebar_mission_control) {

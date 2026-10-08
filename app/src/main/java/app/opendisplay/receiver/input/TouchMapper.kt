@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.GestureDetector
+import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import app.opendisplay.receiver.net.ReceiverServer
@@ -40,6 +41,7 @@ class TouchMapper(
     private val onHaptic: () -> Unit = {},
     /** Shared with the sidebar so both ignore a resting hand. */
     private val palm: PalmGuard = PalmGuard(),
+    private val onPointerEcho: (Double, Double) -> Unit = { _, _ -> },
     private val onViewportChanged: (Viewport) -> Unit = {},
 ) {
     private val density = context.resources.displayMetrics.density
@@ -98,8 +100,17 @@ class TouchMapper(
     private var lastScrollX = 0f
     private var lastScrollY = 0f
 
-    /** Mouse right-click was sent as a `click`; swallow the rest of that press. */
-    private var swallowMouse = false
+    private val desktopPointer = DesktopPointer(
+        controls, touch = { phase, x, y, mods -> server.sendTouch(phase, x, y, mods = mods) },
+        hover = { x, y, mods -> server.sendHover(x, y, mods = mods) },
+        click = server::sendClick, scroll = server::sendScroll, shortcut = server::sendShortcut,
+        echo = onPointerEcho,
+    )
+    private var padX = 0f
+    private var padY = 0f
+    private var padCount = 0
+    private var contactX = 0.5
+    private var contactY = 0.5
 
     /** 3+ finger shortcut gesture; blocks scroll/zoom until all fingers lift. */
     private var comboActive = false
@@ -124,6 +135,7 @@ class TouchMapper(
         context,
         object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                if (macDragging) server.sendTouch("cancelled", contactX, contactY, mods = controls.activeMods)
                 multiFinger = true
                 macDragging = false
                 panningViewport = false
@@ -202,7 +214,7 @@ class TouchMapper(
         // Palm rejection: ignore fingers while the pen is down.
         if (penDown) return true
         if (rejectPalm(event)) return true
-        if (handleMouseButton(event)) return true
+        if (event.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE) return onMouse(event)
 
         if (event.actionMasked == MotionEvent.ACTION_POINTER_DOWN && event.pointerCount >= 3 && !comboActive) {
             // Shortcut gestures own the touch: stop zoom/scroll tracking.
@@ -245,6 +257,7 @@ class TouchMapper(
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
+                if (macDragging) sendMappedTouch(event, "cancelled")
                 multiFinger = true
                 macDragging = false
                 panningViewport = false
@@ -408,28 +421,88 @@ class TouchMapper(
         twoTapEligible = false
     }
 
-    /**
-     * Mouse / trackpad secondary button → Mac right-click. Everything else
-     * from a mouse flows through the normal one-finger path.
-     * @return true if the event was consumed here
-     */
-    private fun handleMouseButton(event: MotionEvent): Boolean {
-        if (event.getToolType(0) != MotionEvent.TOOL_TYPE_MOUSE) return false
-        val action = event.actionMasked
-        if (swallowMouse) {
-            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) swallowMouse = false
+    /** Mouse clicks and drags always operate on the Mac, including while zoomed. */
+    private fun onMouse(event: MotionEvent): Boolean {
+        val (nx, ny) = screenToNormalized(event.x, event.y)
+        desktopPointer.position(nx, ny)
+        if (event.actionMasked == MotionEvent.ACTION_CANCEL) desktopPointer.cancel() else {
+            desktopPointer.buttons(
+                event.buttonState and MotionEvent.BUTTON_PRIMARY != 0,
+                event.buttonState and MotionEvent.BUTTON_SECONDARY != 0,
+            )
+            if (event.actionMasked == MotionEvent.ACTION_MOVE) desktopPointer.motion()
+        }
+        return true
+    }
+
+    /** Relative mouse events and raw touchpad contacts are different under Android capture. */
+    fun onCapturedPointer(event: MotionEvent, viewW: Int, viewH: Int): Boolean {
+        if (viewW <= 0 || viewH <= 0) return false
+        viewWidth = viewW
+        viewHeight = viewH
+        val touchpad = event.isFromSource(InputDevice.SOURCE_TOUCHPAD)
+        if (event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            desktopPointer.cancel()
+            padCount = 0
             return true
         }
-        if (action == MotionEvent.ACTION_DOWN && (event.buttonState and MotionEvent.BUTTON_SECONDARY) != 0) {
-            val (nx, ny) = screenToNormalized(event.x, event.y)
-            if (server.sendClick("right", nx, ny, controls.activeMods)) {
-                controls.consumeOneShot()
-                swallowMouse = true
-                return true
-            }
+        if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
+            desktopPointer.wheel(
+                (event.getAxisValue(MotionEvent.AXIS_HSCROLL) * WHEEL_PX).toDouble(),
+                (event.getAxisValue(MotionEvent.AXIS_VSCROLL) * WHEEL_PX).toDouble(),
+            )
+            return true
         }
-        return false
+        if (touchpad) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> desktopPointer.beginContact(event.eventTime)
+                MotionEvent.ACTION_POINTER_DOWN -> desktopPointer.addContact(event.pointerCount)
+                MotionEvent.ACTION_MOVE -> if (padCount == event.pointerCount) {
+                    for (h in 0 until event.historySize) {
+                        val hx = (0 until event.pointerCount).map { event.getHistoricalX(it, h) }.average().toFloat()
+                        val hy = (0 until event.pointerCount).map { event.getHistoricalY(it, h) }.average().toFloat()
+                        desktopPointer.contactMove(event.pointerCount, (hx - padX).toDouble(), (hy - padY).toDouble(), viewW, viewH)
+                        padX = hx
+                        padY = hy
+                    }
+                    desktopPointer.contactMove(event.pointerCount,
+                        (centroidX(event) - padX).toDouble(), (centroidY(event) - padY).toDouble(), viewW, viewH)
+                }
+                MotionEvent.ACTION_UP -> desktopPointer.endContact(event.eventTime, cancelled = false)
+            }
+            // Never interpret a centroid jump on finger lift as pointer motion.
+            val indices = (0 until event.pointerCount).filter {
+                event.actionMasked != MotionEvent.ACTION_POINTER_UP || it != event.actionIndex
+            }
+            padCount = if (event.actionMasked == MotionEvent.ACTION_UP) 0 else indices.size
+            if (indices.isNotEmpty()) {
+                padX = indices.map { event.getX(it) }.average().toFloat()
+                padY = indices.map { event.getY(it) }.average().toFloat()
+            }
+        } else if (event.actionMasked == MotionEvent.ACTION_MOVE || event.actionMasked == MotionEvent.ACTION_HOVER_MOVE) {
+            for (h in 0 until event.historySize) {
+                desktopPointer.move(event.getHistoricalX(h).toDouble(), event.getHistoricalY(h).toDouble(), viewW, viewH)
+            }
+            desktopPointer.move(event.x.toDouble(), event.y.toDouble(), viewW, viewH)
+        }
+        // Raw pad contacts aren't clicks; only buttonState represents the physical switch.
+        desktopPointer.physicalButtons(event.buttonState and MotionEvent.BUTTON_PRIMARY != 0,
+            event.buttonState and MotionEvent.BUTTON_SECONDARY != 0)
+        return true
     }
+
+    fun releaseInputs() {
+        desktopPointer.cancel()
+        padCount = 0
+        if (macDragging || penDown) {
+            server.sendTouch("cancelled", contactX, contactY)
+        }
+        macDragging = false
+        penPointerId = -1
+        multiFinger = false
+    }
+
+    fun seedPointer(x: Double, y: Double) = desktopPointer.position(x, y)
 
     /** Pen or mouse hovering above the screen (generic-motion events). */
     fun onHover(event: MotionEvent, viewW: Int, viewH: Int): Boolean {
@@ -444,6 +517,11 @@ class TouchMapper(
         when (event.actionMasked) {
             MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_ENTER -> {
                 val (nx, ny) = screenToNormalized(event.x, event.y)
+                if (event.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE) {
+                    desktopPointer.position(nx, ny)
+                    desktopPointer.motion()
+                    return true
+                }
                 val pen = if (isPen(event, 0)) penState(event, 0, 0f, 0f, 0f) else null
                 server.sendHover(nx, ny, pen, controls.activeMods)
                 return true
@@ -452,8 +530,11 @@ class TouchMapper(
                 // Mouse wheel / trackpad scroll: ~48px per detent, wheel-up = content down.
                 val dy = event.getAxisValue(MotionEvent.AXIS_VSCROLL) * WHEEL_PX
                 val dx = event.getAxisValue(MotionEvent.AXIS_HSCROLL) * WHEEL_PX
-                if (dx != 0f || dy != 0f) server.sendScroll(dx.toDouble(), dy.toDouble())
+                desktopPointer.wheel(dx.toDouble(), dy.toDouble())
                 return true
+            }
+            MotionEvent.ACTION_BUTTON_PRESS, MotionEvent.ACTION_BUTTON_RELEASE -> {
+                if (event.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE) return onMouse(event)
             }
         }
         return false
@@ -572,6 +653,8 @@ class TouchMapper(
 
     private fun sendPen(event: MotionEvent, idx: Int, phase: String) {
         val (nx, ny) = screenToNormalized(event.getX(idx), event.getY(idx))
+        contactX = nx
+        contactY = ny
         val pen = penState(
             event, idx,
             event.getPressure(idx),
@@ -630,6 +713,8 @@ class TouchMapper(
 
     private fun sendMappedTouch(event: MotionEvent, phase: String) {
         val (nx, ny) = screenToNormalized(event.x, event.y)
+        contactX = nx
+        contactY = ny
         server.sendTouch(phase, nx, ny, mods = controls.activeMods)
         if (phase == "ended") controls.consumeOneShot()
     }

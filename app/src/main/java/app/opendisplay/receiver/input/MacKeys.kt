@@ -17,6 +17,9 @@ object Mods {
         if (meta and KeyEvent.META_META_ON != 0) m = m or CMD
         return m
     }
+
+    fun remapControl(mods: Int, controlIsCommand: Boolean): Int =
+        if (controlIsCommand && mods and CTRL != 0) (mods and CTRL.inv()) or CMD else mods
 }
 
 /** macOS virtual key codes (kVK_*, ANSI layout) and Android → Mac translation. */
@@ -83,6 +86,15 @@ object MacKeys {
         put(KeyEvent.KEYCODE_NUMPAD_DIVIDE, 75)
         put(KeyEvent.KEYCODE_NUMPAD_SUBTRACT, 78)
         put(KeyEvent.KEYCODE_NUMPAD_EQUALS, 81)
+        put(KeyEvent.KEYCODE_SHIFT_LEFT, 56)
+        put(KeyEvent.KEYCODE_SHIFT_RIGHT, 60)
+        put(KeyEvent.KEYCODE_CTRL_LEFT, 59)
+        put(KeyEvent.KEYCODE_CTRL_RIGHT, 62)
+        put(KeyEvent.KEYCODE_ALT_LEFT, 58)
+        put(KeyEvent.KEYCODE_ALT_RIGHT, 61)
+        put(KeyEvent.KEYCODE_META_LEFT, 55)
+        put(KeyEvent.KEYCODE_META_RIGHT, 54)
+        put(KeyEvent.KEYCODE_CAPS_LOCK, 57)
     }
 
     private const val US_UNSHIFTED = "`1234567890-=qwertyuiop[]\\asdfghjkl;'zxcvbnm,./ "
@@ -117,4 +129,18 @@ object MacKeys {
 
     /** @return the Mac virtual key code, or null for keys we do not forward. */
     fun fromAndroid(keyCode: Int): Int? = map[keyCode]
+
+    fun modifierFor(code: Int): Int = when (code) {
+        56, 60 -> Mods.SHIFT
+        59, 62 -> Mods.CTRL
+        58, 61 -> Mods.OPT
+        55, 54 -> Mods.CMD
+        else -> 0
+    }
+
+    fun mappedCode(keyCode: Int, controlIsCommand: Boolean): Int? = when {
+        controlIsCommand && keyCode == KeyEvent.KEYCODE_CTRL_LEFT -> 55
+        controlIsCommand && keyCode == KeyEvent.KEYCODE_CTRL_RIGHT -> 54
+        else -> fromAndroid(keyCode)
+    }
 }

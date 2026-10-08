@@ -1,5 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="desktop_input_settings">Keyboard &amp; trackpad</string>
+    <string name="desktop_capture_pointer">Capture trackpad</string>
+    <string name="desktop_release_pointer">Release trackpad</string>
+    <string name="desktop_capture_active">Trackpad captured · Ctrl+Alt+Backspace to release</string>
+    <string name="desktop_ctrl_command">Use Ctrl as Command (⌘)</string>
+    <string name="desktop_ctrl_command_help">Use Ctrl+C, Ctrl+V and Ctrl+Tab as Mac shortcuts. The keyboard’s Meta key also acts as Command. Android may reserve some system shortcuts.</string>
+    <string name="desktop_reverse_scroll">Reverse trackpad and wheel scrolling</string>
+    <string name="desktop_pointer_speed">Captured pointer speed</string>
+    <string name="desktop_speed_value">Captured pointer speed: %1$d%%</string>
+    <string name="desktop_input_help">Capture the trackpad from More to hide the Android pointer and control the Mac across the whole display. On raw trackpads: one finger moves, two fingers scroll, one-finger tap clicks, two-finger tap right-clicks. Tap then touch and hold to drag. Three-finger swipes open Mission Control or switch Spaces.</string>
+    <string name="desktop_capture_help">Press Ctrl+Alt+Backspace to release capture, or use the touchscreen sidebar → More → Release trackpad. Capture ends when you leave the app. Gesture availability depends on the keyboard cover and Android.</string>
     <string name="app_name">OpenDisplay</string>
     <string name="waiting_for_mac">Waiting for Mac…</string>
     <string name="listening">Listening on port %1$d</string>

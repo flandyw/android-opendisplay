@@ -67,6 +67,19 @@ class InputControlsTest {
     }
 
     @Test
+    fun desktopPreferencesSurviveSessionEndButHardwareStateDoesNot() {
+        val controls = InputControls(controlIsCommand = true, reverseScroll = true, pointerSpeed = 1.5f)
+        controls.hardwareMods = Mods.SHIFT
+        controls.setPointerCaptured(true)
+        controls.endSession()
+        assertEquals(true, controls.ui.value.controlIsCommand)
+        assertEquals(true, controls.ui.value.reverseScroll)
+        assertEquals(1.5f, controls.ui.value.pointerSpeed, 0f)
+        assertEquals(false, controls.ui.value.pointerCaptured)
+        assertEquals(0, controls.activeMods)
+    }
+
+    @Test
     fun dimToggles() {
         val c = InputControls()
         c.setDim(true)

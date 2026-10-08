@@ -60,7 +60,8 @@ on those networks.
 - Sidecar-style gestures: 3-finger swipe = undo/redo, pinch = copy/paste; 4-finger swipe = Mission Control / Spaces; two-finger tap = right-click
 - Sidebar (tab on either screen edge — tap or drag it open). Open, it takes its own strip of the screen and the picture scales down beside it instead of being covered. It keeps to what matters: sticky ⌘ ⌥ ⌃ ⇧ (tap = next click only, long-press = lock; a dot on the tab shows one is armed), Esc, Undo, the on-screen keyboard, pen-only mode (fingers scroll), a one-tap zoom reset while zoomed, and a **More** menu with Mission Control, Spotlight, Dock, mirror/extend, stats, dim screen and which edge the sidebar docks to. Redo, copy and paste are gestures (3-finger swipe/pinch)
 - On-screen keyboard types into the Mac (autocorrect off, so the Mac sees what you typed); sticky modifiers combine with it (⌘ then `c` = copy). Needs Mac-app `key` support
-- Hardware keyboard keys include the numeric keypad
+- Hardware keyboard keys include the numeric keypad, left/right modifiers, Caps Lock, and held-key shortcuts; held keys release when the app loses focus
+- **More → Keyboard & trackpad**: optional Ctrl-as-Command mapping, reversed hardware scrolling, and captured pointer speed. **More → Capture trackpad** hides the Android pointer and routes relative input to the Mac. Raw trackpads support taps, two-finger scrolling/right-click, tap-and-hold dragging, and three-finger Mission Control/Spaces gestures
 - Hardware keyboard, mouse/trackpad (hover, right-click, wheel) and clipboard sync (text, and images up to ~600 KB; turn on "Sync clipboard" in the Mac app)
 - Auto-reconnect when a reverse (tablet → Mac) session drops; the last frame stays up with a “Reconnecting…” pill for a few seconds, so rotation, mirror/extend switches and Wi‑Fi blips don't flash the connection screen. Matches the display's highest refresh rate
 - Features marked above beyond basic touch need Mac-app support — see [WIRE-EXTENSIONS.md](WIRE-EXTENSIONS.md); without it they stay inactive
@@ -91,6 +92,51 @@ see [Verified](#verified)):
 | USB tethering | Works (may affect Mac internet) |
 | System audio | Mac → device when streaming |
 | Background keep-alive | Foreground service |
+
+## Tablet keyboard and trackpad
+
+While streaming, open the edge sidebar and long-press its collapse button to
+open **More**. **Keyboard & trackpad** contains persistent input preferences:
+
+- **Use Ctrl as Command (⌘)** makes Ctrl+C/V/Z and Ctrl+Tab send the corresponding
+  Mac shortcut. Off by default so Ctrl remains available for terminals. The
+  keyboard's Meta key also maps to Command. Android/OEM system shortcuts may be
+  intercepted before the app receives them.
+- **Reverse trackpad and wheel scrolling** reverses both hardware scroll axes.
+- **Captured pointer speed** adjusts relative movement from 50% to 200%.
+
+Choose **More → Capture trackpad** to control the desktop without an Android
+pointer stopping at the tablet's screen edges. Capture uses
+[Android's pointer capture API](https://developer.android.com/develop/ui/views/touch-and-input/gestures/movement#pointer-capture)
+and requires the Mac's `hover` capability. The app shows the actual capture state
+in a small pill at the bottom. Press **Ctrl+Alt+Backspace**, use the touchscreen
+sidebar's **More** menu, or leave the app to release it. Opening the software
+keyboard releases capture too; returning to the app does not recapture it.
+
+When Android delivers raw trackpad contacts, one finger moves, a one-finger tap
+clicks, two fingers scroll, and a two-finger tap right-clicks. Tap then touch
+again and hold to drag, or hold the physical primary button while moving.
+Three-finger swipes up/down send Mission Control/App Exposé, and left/right
+switch Spaces. Right-click needs the Mac's `click` capability; shortcuts need
+`key`. Covers that report mouse events use their Android-provided click/scroll
+gestures instead. Pointer clicks and drags continue to operate on the Mac while
+the view is zoomed.
+
+The **OnePlus Pad 2 Pro (CN) / Pad 3 with official keyboard cover** is the intended
+hardware target for this input work, but its event delivery has **not been
+verified on a physical device**. Before considering it verified, check:
+
+- Pointer movement, primary click/drag and right-click, with and without capture.
+- Vertical/horizontal two-finger scrolling, lifting one finger first, and the
+  reverse-scroll preference.
+- One/two-finger taps, tap-and-hold dragging, and three-finger swipes when captured.
+- Ctrl-as-Command copy/paste/undo and app switching, Shift-selection and a
+  modifier held during a click. Keep Ctrl-as-Command off when testing Ctrl in a
+  terminal.
+- Focus loss/Home and reconnect while holding a key or dragging: no stuck key or
+  mouse button. Capture releases and must be requested again.
+- Ctrl+Alt+Backspace exits capture, input settings remain navigable with the
+  keyboard, and ordinary touchscreen/pen input still works.
 
 ## Platform
 
