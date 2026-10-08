@@ -2,6 +2,7 @@
 
 package app.opendisplay.receiver.ui
 
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
@@ -19,10 +20,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
@@ -34,6 +33,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -56,6 +56,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -108,6 +109,7 @@ fun SidebarOverlay(
     onTapMod: (Int) -> Unit,
     onLockMod: (Int) -> Unit,
     onShortcut: (code: Int, mods: Int) -> Unit,
+    onSystemShortcut: (code: Int, mods: Int) -> Unit,
     onPenOnly: (Boolean) -> Unit,
     onMirror: (Boolean) -> Unit,
     onHud: (Boolean) -> Unit,
@@ -191,11 +193,13 @@ fun SidebarOverlay(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     if (keyEnabled) {
-                        IconKey(R.drawable.ic_sidebar_square_arrow_up, R.string.sidebar_menu_bar, haptic) {
-                            onShortcut(MacKeys.F2, Mods.CTRL)
+                        IconKey(R.drawable.ic_sidebar_square_arrow_up, R.string.sidebar_menu_bar, haptic,
+                            help = R.string.sidebar_menu_bar_help, showFeedback = true) {
+                            onSystemShortcut(MacKeys.F2, Mods.CTRL)
                         }
-                        IconKey(R.drawable.ic_sidebar_square_arrow_down, R.string.sidebar_dock, haptic) {
-                            onShortcut(MacKeys.D, Mods.CMD or Mods.OPT)
+                        IconKey(R.drawable.ic_sidebar_square_arrow_down, R.string.sidebar_dock, haptic,
+                            help = R.string.sidebar_dock_help, showFeedback = true) {
+                            onSystemShortcut(MacKeys.D, Mods.CMD or Mods.OPT)
                         }
                     }
                     Spacer(Modifier.weight(1f))
@@ -230,9 +234,9 @@ fun SidebarOverlay(
                             if (keyEnabled) {
                                 MoreItem(R.string.sidebar_escape) { onShortcut(MacKeys.ESCAPE, 0) }
                                 MoreItem(R.string.sidebar_mission_control) {
-                                    onShortcut(MacKeys.ARROW_UP, Mods.CTRL)
+                                    onSystemShortcut(MacKeys.ARROW_UP, Mods.CTRL)
                                 }
-                                MoreItem(R.string.sidebar_spotlight) { onShortcut(MacKeys.SPACE, Mods.CMD) }
+                                MoreItem(R.string.sidebar_spotlight) { onSystemShortcut(MacKeys.SPACE, Mods.CMD) }
                             }
                             MoreItem(R.string.sidebar_pen_only, checked = ui.penOnly) { onPenOnly(!ui.penOnly) }
                             if (ui.zoomed) {
@@ -251,13 +255,8 @@ fun SidebarOverlay(
                             }
                         }
                     }
-                    TextButton(
-                        onClick = onDisconnect,
-                        contentPadding = PaddingValues(0.dp),
-                        modifier = Modifier.width(48.dp).heightIn(min = 48.dp),
-                    ) {
-                        Text(stringResource(R.string.disconnect_session), color = GlyphColor, fontSize = 12.sp)
-                    }
+                    IconKey(R.drawable.ic_sidebar_disconnect, R.string.disconnect_session, haptic,
+                        help = R.string.sidebar_disconnect_help, onClick = onDisconnect)
                 }
             }
         }
@@ -367,17 +366,40 @@ private fun IconKey(
     toggle: Boolean = false,
     onLongPress: (() -> Unit)? = null,
     longPressLabel: String? = null,
+    @androidx.annotation.StringRes help: Int? = null,
+    showFeedback: Boolean = false,
     onClick: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val label = stringResource(name)
+    var helpOpen by remember { mutableStateOf(false) }
     PanelButton(
-        description = stringResource(name),
+        description = label,
         state = if (toggle) stringResource(if (active) R.string.sidebar_state_on else R.string.sidebar_state_off) else null,
         color = if (active) ActiveColor else IdleColor,
-        onClick = { onHaptic(); onClick() },
-        onLongPress = onLongPress?.let { action -> { onHaptic(); action() } },
-        longPressLabel = longPressLabel,
+        onClick = {
+            onHaptic()
+            onClick()
+            if (showFeedback) Toast.makeText(context, label, Toast.LENGTH_SHORT).show()
+        },
+        onLongPress = when {
+            onLongPress != null -> { { onHaptic(); onLongPress() } }
+            help != null -> { { onHaptic(); helpOpen = true } }
+            else -> null
+        },
+        longPressLabel = longPressLabel ?: if (help != null) stringResource(R.string.sidebar_explain) else null,
     ) {
         Icon(painterResource(icon), contentDescription = null, tint = GlyphColor, modifier = Modifier.size(22.dp))
+    }
+    if (helpOpen && help != null) {
+        AlertDialog(
+            onDismissRequest = { helpOpen = false },
+            title = { Text(label) },
+            text = { Text(stringResource(help)) },
+            confirmButton = {
+                TextButton(onClick = { helpOpen = false }) { Text(stringResource(R.string.connection_done)) }
+            },
+        )
     }
 }
 

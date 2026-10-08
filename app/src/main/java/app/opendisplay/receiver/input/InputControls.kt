@@ -59,6 +59,18 @@ class InputControls(rightSide: Boolean = false, palmReject: Boolean = true) {
     /** Call after a click or key has been sent with [activeMods]. */
     fun consumeOneShot() = state.update { if (it.oneShotMods == 0) it else it.copy(oneShotMods = 0) }
 
+    /** Fixed system actions use exactly their shortcut, regardless of armed modifiers. */
+    fun dispatchShortcut(
+        code: Int,
+        mods: Int,
+        useActiveMods: Boolean = true,
+        send: (Int, Int) -> Boolean,
+    ): Boolean {
+        val sent = send(code, if (useActiveMods) mods or activeMods else mods)
+        if (sent && useActiveMods) consumeOneShot()
+        return sent
+    }
+
     fun setPenOnly(on: Boolean) = state.update { it.copy(penOnly = on) }
     fun setHud(on: Boolean) = state.update { it.copy(hud = on) }
     fun setMirror(on: Boolean) = state.update { it.copy(mirror = on) }

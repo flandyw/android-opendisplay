@@ -6,6 +6,40 @@ import org.junit.Test
 
 class InputControlsTest {
     @Test
+    fun systemShortcutsIgnoreArmedAndLockedModifiers() {
+        val controls = InputControls()
+        controls.tapMod(Mods.CMD)
+        controls.lockMod(Mods.SHIFT)
+        val sent = mutableListOf<Pair<Int, Int>>()
+        val send: (Int, Int) -> Boolean = { code, mods -> sent.add(code to mods); true }
+
+        controls.dispatchShortcut(MacKeys.F2, Mods.CTRL, useActiveMods = false, send = send)
+        controls.dispatchShortcut(MacKeys.D, Mods.CMD or Mods.OPT, useActiveMods = false, send = send)
+
+        assertEquals(listOf(MacKeys.F2 to Mods.CTRL, MacKeys.D to (Mods.CMD or Mods.OPT)), sent)
+        assertEquals(Mods.CMD or Mods.SHIFT, controls.activeMods)
+    }
+
+    @Test
+    fun ordinaryShortcutsKeepModifiersAndConsumeOnlyTheOneShot() {
+        val controls = InputControls()
+        controls.tapMod(Mods.OPT)
+        controls.lockMod(Mods.SHIFT)
+        var sent: Pair<Int, Int>? = null
+        controls.dispatchShortcut(MacKeys.Z, Mods.CMD) { code, mods -> sent = code to mods; true }
+        assertEquals(MacKeys.Z to (Mods.CMD or Mods.OPT or Mods.SHIFT), sent)
+        assertEquals(Mods.SHIFT, controls.activeMods)
+    }
+
+    @Test
+    fun unsentShortcutDoesNotConsumeTheNextClickModifier() {
+        val controls = InputControls()
+        controls.tapMod(Mods.CMD)
+        assertEquals(false, controls.dispatchShortcut(MacKeys.Z, 0) { _, _ -> false })
+        assertEquals(Mods.CMD, controls.activeMods)
+    }
+
+    @Test
     fun oneShotModifierClearsAfterUse() {
         val c = InputControls()
         c.tapMod(Mods.CMD)

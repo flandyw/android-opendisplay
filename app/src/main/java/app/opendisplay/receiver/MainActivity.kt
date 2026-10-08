@@ -431,8 +431,10 @@ class MainActivity : ComponentActivity() {
                             onTapMod = controls::tapMod,
                             onLockMod = controls::lockMod,
                             onShortcut = { code, mods ->
-                                server.sendShortcut(code, mods or controls.activeMods)
-                                controls.consumeOneShot()
+                                controls.dispatchShortcut(code, mods, send = server::sendShortcut)
+                            },
+                            onSystemShortcut = { code, mods ->
+                                controls.dispatchShortcut(code, mods, useActiveMods = false, send = server::sendShortcut)
                             },
                             onPenOnly = controls::setPenOnly,
                             onMirror = { mirror ->
