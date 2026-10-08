@@ -25,3 +25,17 @@ Implementation checklist:
 - Pending on-device checks: expanded layout, modifier tap/hold, keyboard toggle, menu bar/Dock shortcuts, long-press extras, collapse/reopen, right docking, short-screen scrolling, and touch isolation from the stream.
 
 final result: blocked
+
+# Main connection screen redesign — 2026-10-08
+
+Scope: the native Android connection screen in `app/src/main/java/app/opendisplay/receiver/ui/ConnectionScreen.kt`. The existing Compose implementation and `OpenDisplayTheme` provide the design context; no rendered main-screen reference was supplied.
+
+The tablet layout separates the introduction and device identity from the primary connection panel. Discovered Macs are clickable rows, manual Mac entry remains available, Wi-Fi instructions expand on demand, and USB instructions appear when USB is selected. Device address and auto-connect live together. The header exposes Help and App updates; an update-required connection problem offers App updates directly when available. Searching, connecting, connected, offline, and error states use the existing typed connection state.
+
+The screen retains Material 3 Expressive typography and motion, dynamic colors, and system light/dark themes. At widths below 840dp or font scales of 1.35 and higher, sections stack and scroll. Full advertised device names wrap, Mac rows retain full names in their text semantics, and the auto-connect row remains a single switch target.
+
+Validation: 98 existing unit tests pass, the debug APK assembles, and `git diff --check` passes. Lint reports the same four errors outside this screen: MissingLeanbackLauncher in the manifest and three RestrictedApi findings in MainActivity. No ConnectionScreen lint findings were reported.
+
+Rendered verification remains unavailable: T3 device access is disabled. Compose preview configurations cover phone and tablet discovery, searching, USB, large text, offline, desktop handoff, and update-required states, but they have not been rendered here. No screenshot, pixel-fidelity, or on-device usability conclusion is claimed.
+
+Pending device checks: landscape/portrait layout and scrolling, 1.5×/2× text, long device/Mac names, discovery and manual connection, both mode selectors, expanding setup instructions, address copying, auto-connect toggle, Help and update sheets, and automatic transition into the streamed desktop.

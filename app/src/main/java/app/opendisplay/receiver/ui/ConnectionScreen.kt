@@ -19,6 +19,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -60,6 +61,7 @@ import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -146,7 +148,7 @@ fun ConnectionScreen(
         }
     }
 
-    // Opaque surfaces cover the live decoder, including during reconnects.
+    // Keep the live decoder covered until the desktop is ready.
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surface,
         contentWindowInsets = WindowInsets.safeDrawing,
@@ -154,12 +156,23 @@ fun ConnectionScreen(
             TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Symbol(R.drawable.ic_desktop_windows, modifier = Modifier.size(26.dp))
-                        Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                            Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                                Symbol(R.drawable.ic_desktop_windows)
+                            }
+                        }
+                        Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleLarge,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 },
                 actions = {
-                    FilledTonalIconButton(onClick = { sheet = ConnectionSheet.HELP }, modifier = Modifier.padding(end = 12.dp)) {
+                    if (updates != null) {
+                        IconButton(onClick = { sheet = ConnectionSheet.UPDATES }) {
+                            Symbol(R.drawable.ic_sidebar_square_arrow_down, description = stringResource(
+                                if (updates.hasUpdate) R.string.updates_button_available else R.string.updates_button))
+                        }
+                    }
+                    IconButton(onClick = { sheet = ConnectionSheet.HELP }, modifier = Modifier.padding(end = 12.dp)) {
                         Symbol(R.drawable.ic_help, description = stringResource(R.string.connection_help))
                     }
                 },
@@ -170,57 +183,49 @@ fun ConnectionScreen(
         snackbarHost = { if (sheet == null) SnackbarHost(snackbar) },
     ) { insets ->
         BoxWithConstraints(Modifier.fillMaxSize().padding(insets).consumeWindowInsets(insets)) {
-            val wide = maxWidth >= 840.dp && LocalDensity.current.fontScale < 1.5f
-            val spacing = if (wide) 32.dp else 20.dp
+            val wide = maxWidth >= 840.dp && LocalDensity.current.fontScale < 1.35f
             Column(
-                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-                    .padding(horizontal = if (wide) 40.dp else 20.dp, vertical = 16.dp),
+                Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                    .padding(horizontal = if (wide) 40.dp else 24.dp, vertical = if (wide) 32.dp else 20.dp),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                // Always present while idle so people can see this device is looking for Macs.
-                if (onConnectMac != null && !state.connected && stage != ConnectionStage.CONNECTING) {
-                    NearbyMacs(
-                        nearbyMacs, onConnectNearby, { askingMac = true },
-                        Modifier.widthIn(max = if (wide) 1120.dp else 560.dp).fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(spacing))
-                }
-                if (onAutoConnect != null) {
-                    Row(
-                        modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth()
-                            .toggleable(autoConnectEnabled, role = Role.Switch, onValueChange = onAutoConnect)
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(stringResource(R.string.auto_connect_last_device), style = MaterialTheme.typography.titleSmall)
-                            Text(stringResource(R.string.auto_connect_delay), style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Switch(checked = autoConnectEnabled, onCheckedChange = null)
+                val introduction: @Composable () -> Unit = {
+                    Column(verticalArrangement = Arrangement.spacedBy(if (wide) 32.dp else 24.dp)) {
+                        ConnectionHero(stage, state.problem, wide)
+                        if (wide) DeviceIdentity(state, autoConnectEnabled, onAutoConnect) { sheet = ConnectionSheet.ADDRESS }
                     }
-                    Spacer(Modifier.height(spacing))
+                }
+                val connection: @Composable () -> Unit = {
+                    ConnectionPanel(state, mode, stage, nearbyMacs, onConnectNearby,
+                        onConnectionMode, onConnectMac?.let { { askingMac = true } },
+                        { sheet = it }, openSettings,
+                        wide = wide, updatesEnabled = updates != null)
                 }
                 if (wide) {
-                    Row(Modifier.widthIn(max = 1120.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(spacing), verticalAlignment = Alignment.CenterVertically) {
-                        ConnectionHero(stage, state.problem, wide = true, modifier = Modifier.weight(1f))
-                        ConnectionGuide(state, mode, stage, onConnectionMode, { sheet = it }, openSettings, Modifier.weight(1.05f))
+                    Row(Modifier.widthIn(max = 1120.dp).fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(48.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(0.9f)) { introduction() }
+                        Box(Modifier.weight(1.2f)) { connection() }
                     }
                 } else {
-                    Column(Modifier.widthIn(max = 560.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(spacing)) {
-                        ConnectionHero(stage, state.problem, wide = false)
-                        ConnectionGuide(state, mode, stage, onConnectionMode, { sheet = it }, openSettings)
+                    Column(Modifier.widthIn(max = 560.dp).fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(24.dp)) {
+                        introduction()
+                        connection()
+                        DeviceIdentity(state, autoConnectEnabled, onAutoConnect) { sheet = ConnectionSheet.ADDRESS }
                     }
                 }
-                Spacer(Modifier.height(16.dp))
-                TextButton(onClick = { sheet = ConnectionSheet.HELP }) {
-                    Text(stringResource(R.string.connection_trouble))
-                }
-                if (updates != null) {
-                    TextButton(onClick = { sheet = ConnectionSheet.UPDATES }) {
-                        Text(stringResource(if (updates.hasUpdate) R.string.updates_button_available else R.string.updates_button))
+                Column(Modifier.widthIn(max = 1120.dp).fillMaxWidth().padding(top = 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally) {
+                    TextButton(onClick = { sheet = ConnectionSheet.HELP }) {
+                        Text(stringResource(R.string.connection_trouble))
+                    }
+                    if (updates?.hasUpdate == true) {
+                        FilledTonalButton(onClick = { sheet = ConnectionSheet.UPDATES }) {
+                            Text(stringResource(R.string.updates_button_available))
+                        }
                     }
                 }
             }
@@ -279,53 +284,63 @@ fun ConnectionScreen(
     }
 }
 
-/** Macs found automatically. The first time, the Mac asks the person to allow this device. */
+/** Discovery is the main action; manual connection remains available as a fallback. */
 @Composable
 private fun NearbyMacs(
     macs: List<NearbyMac>,
     onConnect: (NearbyMac) -> Unit,
-    onEnterAddress: () -> Unit,
-    modifier: Modifier = Modifier,
+    onEnterAddress: (() -> Unit)?,
 ) {
-    val onColor = MaterialTheme.colorScheme.onTertiaryContainer
-    Surface(modifier, shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.tertiaryContainer) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    stringResource(R.string.connection_nearby_title),
-                    Modifier.weight(1f).semantics { heading() },
-                    style = MaterialTheme.typography.titleLarge,
-                    color = onColor,
-                )
-                if (macs.isEmpty()) LoadingIndicator(Modifier.size(32.dp), color = onColor)
+    val colors = MaterialTheme.colorScheme
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(if (macs.isEmpty()) R.string.connection_search_title else R.string.connection_nearby_title),
+                style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f).semantics { heading() })
+            if (macs.isEmpty()) LoadingIndicator(Modifier.size(28.dp))
+        }
+        if (macs.isEmpty()) {
+            Surface(shape = RoundedCornerShape(20.dp), color = colors.surfaceContainer) {
+                Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Surface(shape = RoundedCornerShape(14.dp), color = colors.primaryContainer) {
+                        Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) { Symbol(R.drawable.ic_desktop_windows) }
+                    }
+                    Text(stringResource(R.string.connection_nearby_empty), modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                }
             }
-            Text(
-                stringResource(if (macs.isEmpty()) R.string.connection_nearby_empty else R.string.connection_nearby_body),
-                style = MaterialTheme.typography.bodyMedium,
-                color = onColor,
-            )
+        } else {
+            Text(stringResource(R.string.connection_nearby_body), style = MaterialTheme.typography.bodyMedium,
+                color = colors.onSurfaceVariant)
             macs.forEach { mac ->
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Symbol(R.drawable.ic_desktop_windows, modifier = Modifier.size(24.dp))
-                    Text(
-                        mac.name,
-                        Modifier.weight(1f),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Button(onClick = { onConnect(mac) }) {
-                        Text(stringResource(R.string.connection_mac_connect))
+                Surface(onClick = { onConnect(mac) }, shape = RoundedCornerShape(20.dp),
+                    color = colors.surface,
+                    modifier = Modifier.fillMaxWidth().semantics { role = Role.Button }) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Surface(shape = RoundedCornerShape(12.dp), color = colors.primaryContainer) {
+                            Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) { Symbol(R.drawable.ic_desktop_windows) }
+                        }
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(mac.name, style = MaterialTheme.typography.titleMedium,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(stringResource(R.string.connection_mac_network), style = MaterialTheme.typography.bodySmall,
+                                color = colors.onSurfaceVariant)
+                        }
+                        Symbol(R.drawable.ic_arrow_forward, description = stringResource(R.string.connection_mac_connect))
                     }
                 }
             }
-            TextButton(onClick = onEnterAddress, modifier = Modifier.align(Alignment.End)) {
-                Text(stringResource(R.string.connection_mac_button))
+        }
+        if (onEnterAddress != null) {
+            if (macs.isEmpty()) {
+                FilledTonalButton(onClick = onEnterAddress, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                    Text(stringResource(R.string.connection_mac_button))
+                }
+            } else {
+                TextButton(onClick = onEnterAddress, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.connection_mac_button))
+                }
             }
         }
     }
@@ -372,56 +387,75 @@ private fun MacAddressDialog(initial: String, onDismiss: () -> Unit, onConnect: 
 }
 
 @Composable
-private fun ConnectionHero(stage: ConnectionStage, problem: ReceiverProblem?, wide: Boolean, modifier: Modifier = Modifier) {
-    val attention = stage == ConnectionStage.NEEDS_ATTENTION
+private fun ConnectionHero(stage: ConnectionStage, problem: ReceiverProblem?, wide: Boolean) {
     val colors = MaterialTheme.colorScheme
     val motion = MaterialTheme.motionScheme
-    Surface(
-        modifier.fillMaxWidth().animateContentSize(MaterialTheme.motionScheme.defaultSpatialSpec()),
-        shape = RoundedCornerShape(topStart = 36.dp, topEnd = 36.dp, bottomEnd = 36.dp, bottomStart = 12.dp),
-        color = if (attention) colors.errorContainer else colors.primaryContainer,
-        contentColor = if (attention) colors.onErrorContainer else colors.onPrimaryContainer,
-    ) {
-        Column(Modifier.padding(if (wide) 36.dp else 24.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+    val attention = stage == ConnectionStage.NEEDS_ATTENTION
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(if (wide) 24.dp else 16.dp)) {
+        Surface(shape = RoundedCornerShape(50),
+            color = if (attention) colors.errorContainer else colors.surfaceContainerHigh,
+            contentColor = if (attention) colors.onErrorContainer else colors.onSurfaceVariant) {
+            Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (stage.busy) LoadingIndicator(Modifier.size(20.dp)) else {
+                    Box(Modifier.size(7.dp).background(
+                        if (attention) colors.error else if (stage == ConnectionStage.READY) colors.tertiary else colors.onSurfaceVariant,
+                        CircleShape))
+                }
+                Text(stringResource(stage.label), style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+            }
+        }
+        AnimatedContent(targetState = stage,
+            transitionSpec = { (fadeIn(motion.defaultEffectsSpec()) togetherWith fadeOut(motion.fastEffectsSpec()))
+                .using(SizeTransform(clip = false)) }, label = "Connection introduction") { current ->
+            Text(stringResource(when (current) {
+                ConnectionStage.OPENING -> R.string.connection_opening_headline
+                ConnectionStage.NEEDS_ATTENTION -> if (problem == ReceiverProblem.UPDATE_REQUIRED)
+                    R.string.connection_update_headline else R.string.connection_attention_headline
+                else -> R.string.connection_headline
+            }), style = if (wide) MaterialTheme.typography.displayMediumEmphasized else MaterialTheme.typography.displaySmallEmphasized,
+                modifier = Modifier.semantics { heading() })
+        }
+        Text(stringResource(R.string.connection_description), style = MaterialTheme.typography.bodyLarge,
+            color = colors.onSurfaceVariant, modifier = Modifier.widthIn(max = 400.dp))
+    }
+}
+
+@Composable
+private fun DeviceIdentity(
+    state: ReceiverUiState,
+    autoConnectEnabled: Boolean,
+    onAutoConnect: ((Boolean) -> Unit)?,
+    onAddress: () -> Unit,
+) {
+    Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Surface(shape = RoundedCornerShape(20.dp), color = if (attention) colors.error else colors.primary) {
-                    Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
-                        Symbol(if (attention) R.drawable.ic_info else R.drawable.ic_desktop_windows, modifier = Modifier.size(28.dp))
+                Symbol(R.drawable.ic_touch_app)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(stringResource(R.string.connection_choose_device), style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    // Keep the full advertised name readable for the Mac's device picker.
+                    Text(state.serviceName, style = MaterialTheme.typography.titleMedium)
+                }
+            }
+            TextButton(onClick = onAddress, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 8.dp)) {
+                Text(stringResource(R.string.connection_device_address_action))
+                Spacer(Modifier.size(8.dp))
+                Symbol(R.drawable.ic_arrow_forward, modifier = Modifier.size(18.dp))
+            }
+            if (onAutoConnect != null) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Row(Modifier.fillMaxWidth().toggleable(autoConnectEnabled, role = Role.Switch, onValueChange = onAutoConnect)
+                    .padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(stringResource(R.string.auto_connect_last_device), style = MaterialTheme.typography.titleSmall)
+                        Text(stringResource(R.string.auto_connect_delay), style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                }
-                Text(
-                    stringResource(stage.label),
-                    style = MaterialTheme.typography.labelLarge,
-                    modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
-                )
-                if (stage.busy) LoadingIndicator(Modifier.size(32.dp), color = colors.onPrimaryContainer)
-            }
-            AnimatedContent(
-                targetState = stage,
-                transitionSpec = {
-                    (fadeIn(motion.defaultEffectsSpec()) togetherWith
-                        fadeOut(motion.fastEffectsSpec())).using(SizeTransform(clip = false))
-                },
-                label = "Connection readiness",
-            ) { current ->
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(
-                        stringResource(when (current) {
-                            ConnectionStage.OPENING -> R.string.connection_opening_headline
-                            ConnectionStage.CONNECTING, ConnectionStage.STARTING -> R.string.connection_busy_headline
-                            ConnectionStage.NEEDS_ATTENTION -> if (problem == ReceiverProblem.UPDATE_REQUIRED) R.string.connection_update_headline else R.string.connection_attention_headline
-                            else -> R.string.connection_headline
-                        }),
-                        style = if (wide) MaterialTheme.typography.displayMediumEmphasized else MaterialTheme.typography.displaySmallEmphasized,
-                        modifier = Modifier.semantics { heading() },
-                    )
-                    Text(stringResource(descriptionFor(current, problem)), style = MaterialTheme.typography.bodyLarge)
-                }
-            }
-            if (!stage.busy && !attention) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Symbol(R.drawable.ic_check, modifier = Modifier.size(18.dp))
-                    Text(stringResource(R.string.connection_automatic), style = MaterialTheme.typography.labelMedium)
+                    Switch(checked = autoConnectEnabled, onCheckedChange = null)
                 }
             }
         }
@@ -429,62 +463,99 @@ private fun ConnectionHero(stage: ConnectionStage, problem: ReceiverProblem?, wi
 }
 
 @Composable
-private fun ConnectionGuide(
+private fun ConnectionPanel(
     state: ReceiverUiState,
     mode: ConnectionMode,
     stage: ConnectionStage,
+    macs: List<NearbyMac>,
+    onConnect: (NearbyMac) -> Unit,
     onConnectionMode: (ConnectionMode) -> Unit,
+    onEnterAddress: (() -> Unit)?,
     onSheet: (ConnectionSheet) -> Unit,
     openSettings: (String) -> Unit,
-    modifier: Modifier = Modifier,
+    wide: Boolean,
+    updatesEnabled: Boolean,
 ) {
-    val motion = MaterialTheme.motionScheme
-    Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
-        Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-            if (state.connected && stage != ConnectionStage.NEEDS_ATTENTION) {
-                LoadingIndicator(Modifier.size(56.dp))
-                Text(stringResource(R.string.connection_sending_desktop), style = MaterialTheme.typography.headlineSmallEmphasized)
-                Text(stringResource(R.string.connection_sending_desktop_body), style = MaterialTheme.typography.bodyLarge)
-                Text(stringResource(R.string.connection_permission_help), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            } else {
-                Text(stringResource(R.string.connection_method), style = MaterialTheme.typography.titleLarge, modifier = Modifier.semantics { heading() })
+    Surface(Modifier.fillMaxWidth().animateContentSize(MaterialTheme.motionScheme.defaultSpatialSpec()),
+        shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+        Column(Modifier.padding(if (wide) 28.dp else 20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            Text(stringResource(R.string.connection_panel_title), style = MaterialTheme.typography.headlineSmallEmphasized,
+                modifier = Modifier.semantics { heading() })
+            if ((!state.connected || stage == ConnectionStage.NEEDS_ATTENTION) && stage != ConnectionStage.CONNECTING) {
                 ConnectionModeButtons(mode, onConnectionMode)
-                AnimatedContent(
-                    targetState = mode,
-                    transitionSpec = {
-                        (fadeIn(motion.defaultEffectsSpec()) togetherWith
-                            fadeOut(motion.fastEffectsSpec())).using(SizeTransform(clip = false))
-                    },
-                    label = "Connection instructions",
-                ) { selected ->
-                    Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                        GuideStep(1,
-                            if (selected == ConnectionMode.NETWORK) R.string.connection_wifi_step_title else R.string.connection_usb_step_title,
-                            if (selected == ConnectionMode.NETWORK) R.string.connection_wifi_step_body else R.string.connection_usb_step_body)
-                        GuideStep(2, R.string.connection_mac_step_title,
-                            if (selected == ConnectionMode.NETWORK) R.string.connection_mac_step_body else R.string.connection_usb_mac_step_body)
-                    }
-                }
-                Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
-                    Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Symbol(R.drawable.ic_desktop_windows, modifier = Modifier.size(28.dp))
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(stringResource(R.string.connection_choose_device), style = MaterialTheme.typography.labelSmall)
-                            // Wrap long model names; the full advertised name is needed on the Mac.
-                            Text(state.serviceName, style = MaterialTheme.typography.titleLarge)
+            }
+            when {
+                stage.busy -> {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        LoadingIndicator(Modifier.size(48.dp))
+                        Text(stringResource(if (stage == ConnectionStage.OPENING) R.string.connection_sending_desktop else stage.label),
+                            style = MaterialTheme.typography.titleLarge)
+                        Text(stringResource(descriptionFor(stage, state.problem)), style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (stage == ConnectionStage.OPENING) {
+                            Text(stringResource(R.string.connection_permission_help), style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
-                when {
-                    stage == ConnectionStage.NO_NETWORK -> ExpressiveAction(R.string.connection_wifi_settings, R.drawable.ic_wifi) { openSettings(Settings.ACTION_WIFI_SETTINGS) }
-                    stage == ConnectionStage.NEEDS_ATTENTION -> ExpressiveAction(R.string.connection_trouble, R.drawable.ic_help) { onSheet(ConnectionSheet.HELP) }
-                    mode == ConnectionMode.USB -> ExpressiveAction(R.string.connection_usb_help, R.drawable.ic_usb, primary = false) { onSheet(ConnectionSheet.USB) }
-                    else -> ExpressiveAction(R.string.connection_manual, R.drawable.ic_arrow_forward, primary = false) { onSheet(ConnectionSheet.ADDRESS) }
-                }
-                if (mode == ConnectionMode.USB || stage == ConnectionStage.NEEDS_ATTENTION || stage == ConnectionStage.NO_NETWORK) {
-                    TextButton(onClick = { onSheet(ConnectionSheet.ADDRESS) }, modifier = Modifier.fillMaxWidth()) {
-                        Text(stringResource(R.string.connection_manual))
+                else -> {
+                    if (stage == ConnectionStage.NEEDS_ATTENTION) {
+                        val showUpdates = state.problem == ReceiverProblem.UPDATE_REQUIRED && updatesEnabled
+                        Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.errorContainer) {
+                            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(stringResource(descriptionFor(stage, state.problem)), style = MaterialTheme.typography.bodyMedium)
+                                TextButton(onClick = { onSheet(if (showUpdates) ConnectionSheet.UPDATES else ConnectionSheet.HELP) }) {
+                                    Text(stringResource(if (showUpdates) R.string.updates_button else R.string.connection_trouble),
+                                        color = MaterialTheme.colorScheme.onErrorContainer)
+                                }
+                            }
+                        }
                     }
+                    if (mode == ConnectionMode.NETWORK && state.problem != ReceiverProblem.UPDATE_REQUIRED) {
+                        if (stage == ConnectionStage.NO_NETWORK) {
+                            Text(stringResource(R.string.connection_no_network_description), style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            ExpressiveAction(R.string.connection_wifi_settings, R.drawable.ic_wifi) { openSettings(Settings.ACTION_WIFI_SETTINGS) }
+                            if (onEnterAddress != null) TextButton(onClick = onEnterAddress) {
+                                Text(stringResource(R.string.connection_mac_button))
+                            }
+                        } else {
+                            NearbyMacs(macs, onConnect, onEnterAddress)
+                        }
+                        ConnectionSetup(onSheet)
+                    } else if (mode == ConnectionMode.USB && state.problem != ReceiverProblem.UPDATE_REQUIRED) {
+                        GuideStep(1, R.string.connection_usb_step_title, R.string.connection_usb_step_body)
+                        GuideStep(2, R.string.connection_mac_step_title, R.string.connection_usb_mac_step_body)
+                        ExpressiveAction(R.string.connection_usb_help, R.drawable.ic_usb, primary = false) { onSheet(ConnectionSheet.USB) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectionSetup(onSheet: (ConnectionSheet) -> Unit) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val stateLabel = stringResource(if (expanded) R.string.connection_expanded else R.string.connection_collapsed)
+    Column {
+        Surface(onClick = { expanded = !expanded }, color = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().semantics { stateDescription = stateLabel }) {
+            Row(Modifier.padding(vertical = 12.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Symbol(R.drawable.ic_info, modifier = Modifier.size(20.dp))
+                Text(stringResource(R.string.connection_setup_from_mac), style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.weight(1f))
+                Symbol(if (expanded) R.drawable.ic_close else R.drawable.ic_expand_more, modifier = Modifier.size(20.dp))
+            }
+        }
+        AnimatedVisibility(expanded) {
+            Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                GuideStep(1, R.string.connection_wifi_step_title, R.string.connection_wifi_step_body)
+                GuideStep(2, R.string.connection_mac_step_title, R.string.connection_mac_step_body)
+                TextButton(onClick = { onSheet(ConnectionSheet.ADDRESS) }) {
+                    Text(stringResource(R.string.connection_manual))
                 }
             }
         }
@@ -670,7 +741,11 @@ private fun openSystemSettings(context: Context, action: String): Boolean {
 @Composable
 private fun PhoneConnectionPreview() {
     OpenDisplayTheme(darkTheme = false, dynamicColor = false) {
-        ConnectionScreen(ReceiverUiState(listening = true, serviceName = "Pixel 9", localAddresses = listOf("192.168.1.24")), {})
+        ConnectionScreen(
+            ReceiverUiState(listening = true, serviceName = "Pixel 9", localAddresses = listOf("192.168.1.24")), {},
+            onConnectMac = {}, onAutoConnect = {},
+            nearbyMacs = listOf(NearbyMac("MacBook Pro", "192.168.1.10", 9011)),
+        )
     }
 }
 
@@ -678,7 +753,33 @@ private fun PhoneConnectionPreview() {
 @Composable
 private fun TabletConnectionPreview() {
     OpenDisplayTheme(darkTheme = true, dynamicColor = false) {
-        ConnectionScreen(ReceiverUiState(listening = true, serviceName = "Pixel Tablet", localAddresses = listOf("192.168.1.24")), {})
+        ConnectionScreen(
+            ReceiverUiState(listening = true, serviceName = "OnePlus Pad", localAddresses = listOf("192.168.1.24")), {},
+            onConnectMac = {}, onAutoConnect = {},
+            nearbyMacs = listOf(NearbyMac("MacBook Pro", "192.168.1.10", 9011), NearbyMac("Mac mini", "192.168.1.11", 9011)),
+        )
+    }
+}
+
+@Preview(name = "Tablet · searching", widthDp = 1024, heightDp = 768)
+@Composable
+private fun SearchingConnectionPreview() {
+    OpenDisplayTheme(darkTheme = false, dynamicColor = false) {
+        ConnectionScreen(
+            ReceiverUiState(listening = true, serviceName = "OnePlus Pad", localAddresses = listOf("192.168.1.24")), {},
+            onConnectMac = {}, onAutoConnect = {},
+        )
+    }
+}
+
+@Preview(name = "Tablet · large text", widthDp = 1024, heightDp = 768, fontScale = 1.5f)
+@Composable
+private fun LargeTextTabletPreview() {
+    OpenDisplayTheme(darkTheme = false, dynamicColor = false) {
+        ConnectionScreen(
+            ReceiverUiState(listening = true, serviceName = "OnePlus Pad with a long device name", localAddresses = listOf("192.168.1.24")), {},
+            onConnectMac = {}, onAutoConnect = {},
+        )
     }
 }
 

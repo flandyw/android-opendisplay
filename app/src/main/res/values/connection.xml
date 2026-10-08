@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="connection_panel_title">Connect to your Mac</string>
+    <string name="connection_search_title">Looking for your Mac</string>
+    <string name="connection_mac_network">On your network</string>
+    <string name="connection_device_address_action">Device address</string>
+    <string name="connection_setup_from_mac">Connect from your Mac instead</string>
     <string name="connection_help">Help with connecting</string>
     <string name="connection_ready">Ready to connect</string>
     <string name="connection_starting">Getting ready</string>
@@ -7,12 +12,12 @@
     <string name="connection_connecting">Connecting to your Mac</string>
     <string name="connection_opening">Mac connected</string>
     <string name="connection_attention">Let’s get you connected</string>
-    <string name="connection_headline">Your Mac.\nMore room.</string>
+    <string name="connection_headline">Your Mac.\nRight here.</string>
     <string name="connection_busy_headline">Almost\nthere.</string>
     <string name="connection_opening_headline">Hello,\nMac.</string>
     <string name="connection_attention_headline">Let’s get\nconnected.</string>
     <string name="connection_update_headline">Time for\nan update.</string>
-    <string name="connection_description">Turn this screen into a second display. Connect from your Mac and we’ll take it from here.</string>
+    <string name="connection_description">Bring your Mac’s desktop to this screen. Connect over Wi-Fi or with a USB cable.</string>
     <string name="connection_starting_description">Preparing this screen for your Mac. Just a moment.</string>
     <string name="connection_connecting_description">Making the connection. Your desktop will appear automatically.</string>
     <string name="connection_opening_description">Start Extend or Mirror in OpenDisplay on your Mac. Your desktop will appear here automatically.</string>
@@ -35,7 +40,7 @@
     <string name="connection_manual">Show this device’s address</string>
     <string name="connection_usb_help">USB setup help</string>
     <string name="connection_nearby_title">Macs nearby</string>
-    <string name="connection_nearby_empty">Looking for your Mac on this network. Open OpenDisplay on your Mac and it will appear here.</string>
+    <string name="connection_nearby_empty">Open OpenDisplay on your Mac and use the same network. Your Mac will appear here.</string>
     <string name="connection_nearby_body">Tap your Mac to connect. The first time, your Mac asks you to allow this device.</string>
     <string name="connection_mac_button">Enter your Mac’s address</string>
     <string name="connection_mac_title">Connect to a Mac</string>

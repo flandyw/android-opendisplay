@@ -26,8 +26,10 @@ optional.
 
 - Material 3 Expressive controls, emphasized typography, and spring motion
 - System light/dark themes and wallpaper colors on Android 12+
-- Adaptive phone/tablet connection screen with a two-step Wi-Fi or USB guide
-- **Show this device’s address** opens copyable network addresses; **Help** opens
+- Tablet connection hub with a two-column layout, prominent Mac selection,
+  and a stacked phone/large-text layout. Wi-Fi setup steps expand on demand;
+  USB setup is shown when selected
+- **Device address** opens copyable network addresses; **Help** opens
   expandable network, VPN, USB, touch, and device information
 - The Mac desktop takes over automatically when streaming starts
 
