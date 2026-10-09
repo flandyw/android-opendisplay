@@ -95,8 +95,9 @@ val SidebarWidth = 64.dp
 
 /**
  * A full-height Sidecar-style rail: display shortcuts at the top, sticky
- * modifiers in the middle, and undo/keyboard/hide at the bottom. Long-press
- * hide to open the remaining controls. Collapsed, it is a thin edge tab.
+ * modifiers in the middle, and undo/redo/copy/paste, keyboard and hide at the
+ * bottom. Long-press hide to open the remaining controls (More). Collapsed, it
+ * is a thin edge tab.
  *
  * Modifiers and shortcuts need the Mac to support `key` ([keyEnabled]); the
  * mirror toggle needs `mode` ([modeEnabled]).
@@ -237,6 +238,15 @@ fun SidebarOverlay(
                         IconKey(R.drawable.ic_sidebar_undo_2, R.string.sidebar_undo, haptic) {
                             onShortcut(MacKeys.Z, Mods.CMD)
                         }
+                        IconKey(R.drawable.ic_sidebar_redo_2, R.string.sidebar_redo, haptic) {
+                            onShortcut(MacKeys.Z, Mods.CMD or Mods.SHIFT)
+                        }
+                        IconKey(R.drawable.ic_sidebar_copy, R.string.sidebar_copy, haptic) {
+                            onShortcut(MacKeys.C, Mods.CMD)
+                        }
+                        IconKey(R.drawable.ic_sidebar_clipboard_paste, R.string.sidebar_paste, haptic) {
+                            onShortcut(MacKeys.V, Mods.CMD)
+                        }
                         IconKey(R.drawable.ic_sidebar_keyboard, R.string.sidebar_keyboard, haptic, active = ui.keyboard, toggle = true) {
                             onKeyboard(!ui.keyboard)
                         }
@@ -271,6 +281,13 @@ fun SidebarOverlay(
                                     onSystemShortcut(MacKeys.ARROW_UP, Mods.CTRL)
                                 }
                                 MoreItem(R.string.sidebar_spotlight) { onSystemShortcut(MacKeys.SPACE, Mods.CMD) }
+                                MoreItem(R.string.sidebar_screenshot) {
+                                    onSystemShortcut(MacKeys.FOUR, Mods.CMD or Mods.SHIFT)
+                                }
+                                MoreItem(R.string.sidebar_select_all) { onShortcut(MacKeys.A, Mods.CMD) }
+                                MoreItem(R.string.sidebar_tab) { onShortcut(MacKeys.TAB, 0) }
+                                MoreItem(R.string.sidebar_return) { onShortcut(MacKeys.RETURN, 0) }
+                                MoreItem(R.string.sidebar_forward_delete) { onShortcut(MacKeys.FORWARD_DELETE, 0) }
                             }
                             MoreItem(R.string.sidebar_pen_only, checked = ui.penOnly) { onPenOnly(!ui.penOnly) }
                             if (ui.zoomed) {

@@ -33,8 +33,11 @@ object MacKeys {
     const val D = 2
     const val TAB = 48
     const val SPACE = 49
+    const val A = 0
     const val C = 8
     const val V = 9
+    const val FOUR = 21
+    const val FORWARD_DELETE = 117
     const val ARROW_LEFT = 123
     const val ARROW_RIGHT = 124
     const val ARROW_DOWN = 125
@@ -55,7 +58,7 @@ object MacKeys {
         put(KeyEvent.KEYCODE_GRAVE, 50)
         put(KeyEvent.KEYCODE_DEL, DELETE) // Android DEL is backspace
         put(KeyEvent.KEYCODE_ESCAPE, ESCAPE)
-        put(KeyEvent.KEYCODE_FORWARD_DEL, 117)
+        put(KeyEvent.KEYCODE_FORWARD_DEL, FORWARD_DELETE)
         put(KeyEvent.KEYCODE_MINUS, 27)
         put(KeyEvent.KEYCODE_EQUALS, 24)
         put(KeyEvent.KEYCODE_LEFT_BRACKET, 33)
