@@ -76,6 +76,8 @@ data class ReceiverUiState(
     val deviceSummary: String = "",
     /** Network (default) or USB cable path. */
     val connectionMode: String = "NETWORK",
+    /** Mirror or extend, as picked on the connection screen ("MIRROR" / "EXTEND"). */
+    val desktopMode: String = "EXTEND",
     val problem: ReceiverProblem? = null,
     /** Explicit disconnect bypasses the grace period used for temporary stream loss. */
     val sessionEnded: Boolean = false,
@@ -133,6 +135,8 @@ class ReceiverServer(
     private var pingJob: Job? = null
     private var statsJob: Job? = null
     private var helloDebounceJob: Job? = null
+    /** Mirror (true) or extend (false) to request once the next session's welcome arrives. */
+    @Volatile private var modeForNextWelcome: Boolean? = null
 
     private var state = ReceiverUiState()
 
@@ -462,6 +466,15 @@ class ReceiverServer(
                 .put("type", WireMessage.CLIP_IMAGE)
                 .put("png", android.util.Base64.encodeToString(png, android.util.Base64.NO_WRAP)),
         )
+    }
+
+    /**
+     * Start the next session in [mirror] or extend mode. The request goes out
+     * with that session's welcome, so a Wi‑Fi blip that reconnects the same
+     * session keeps whatever mode the sidebar chose since.
+     */
+    fun startNextSessionIn(mirror: Boolean) {
+        modeForNextWelcome = mirror
     }
 
     /** Ask the Mac to mirror (true) or extend (false) its desktop. */
@@ -808,6 +821,12 @@ class ReceiverServer(
                     // sidebar toggle is right even after a Mac-side change.
                     obj.optString("mode").takeIf { it.isNotEmpty() }?.let { mode ->
                         mainHandler.post { onMode(mode == "mirror") }
+                    }
+                    // Then apply the mode picked on the connection screen. The Mac
+                    // ignores a request that matches its current mode.
+                    modeForNextWelcome?.let { mirror ->
+                        modeForNextWelcome = null
+                        sendDisplayMode(mirror)
                     }
                 }
                 WireMessage.PAIR -> {

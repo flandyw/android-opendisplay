@@ -104,6 +104,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.opendisplay.receiver.ConnectionMode
+import app.opendisplay.receiver.DesktopMode
 import app.opendisplay.receiver.R
 import app.opendisplay.receiver.net.ReceiverProblem
 import app.opendisplay.receiver.net.ReceiverUiState
@@ -115,6 +116,7 @@ private enum class ConnectionSheet { ADDRESS, HELP, USB, UPDATES }
 fun ConnectionScreen(
     state: ReceiverUiState,
     onConnectionMode: (ConnectionMode) -> Unit,
+    onDesktopMode: (DesktopMode) -> Unit,
     updates: UpdatesUi? = null,
     /** Dial a Mac that listens for reverse connections; [lastMacAddress] pre-fills the field. */
     onConnectMac: ((MacAddress) -> Unit)? = null,
@@ -128,6 +130,7 @@ fun ConnectionScreen(
     val context = LocalContext.current
     val mode = ConnectionMode.entries.firstOrNull { it.name == state.connectionMode }
         ?: ConnectionMode.NETWORK
+    val desktopMode = DesktopMode.fromName(state.desktopMode)
     val stage = state.connectionStage(mode)
     var sheet by rememberSaveable { mutableStateOf<ConnectionSheet?>(null) }
     var askingMac by rememberSaveable { mutableStateOf(false) }
@@ -197,8 +200,8 @@ fun ConnectionScreen(
                     }
                 }
                 val connection: @Composable () -> Unit = {
-                    ConnectionPanel(state, mode, stage, nearbyMacs, onConnectNearby,
-                        onConnectionMode, onConnectMac?.let { { askingMac = true } },
+                    ConnectionPanel(state, mode, desktopMode, stage, nearbyMacs, onConnectNearby,
+                        onConnectionMode, onDesktopMode, onConnectMac?.let { { askingMac = true } },
                         { sheet = it }, openSettings,
                         wide = wide, updatesEnabled = updates != null)
                 }
@@ -466,10 +469,12 @@ private fun DeviceIdentity(
 private fun ConnectionPanel(
     state: ReceiverUiState,
     mode: ConnectionMode,
+    desktopMode: DesktopMode,
     stage: ConnectionStage,
     macs: List<NearbyMac>,
     onConnect: (NearbyMac) -> Unit,
     onConnectionMode: (ConnectionMode) -> Unit,
+    onDesktopMode: (DesktopMode) -> Unit,
     onEnterAddress: (() -> Unit)?,
     onSheet: (ConnectionSheet) -> Unit,
     openSettings: (String) -> Unit,
@@ -483,6 +488,7 @@ private fun ConnectionPanel(
                 modifier = Modifier.semantics { heading() })
             if ((!state.connected || stage == ConnectionStage.NEEDS_ATTENTION) && stage != ConnectionStage.CONNECTING) {
                 ConnectionModeButtons(mode, onConnectionMode)
+                DesktopModeButtons(desktopMode, onDesktopMode)
             }
             when {
                 stage.busy -> {
@@ -564,14 +570,48 @@ private fun ConnectionSetup(onSheet: (ConnectionSheet) -> Unit) {
 
 @Composable
 private fun ConnectionModeButtons(selectedMode: ConnectionMode, onSelect: (ConnectionMode) -> Unit) {
+    SegmentedChoice(
+        options = ConnectionMode.entries,
+        selectedOption = selectedMode,
+        onSelect = onSelect,
+        label = { stringResource(if (it == ConnectionMode.NETWORK) R.string.connection_wifi else R.string.connection_usb) },
+        icon = { if (it == ConnectionMode.NETWORK) R.drawable.ic_wifi else R.drawable.ic_usb },
+    )
+}
+
+/** Extend or mirror, chosen before connecting. The sidebar still changes it mid-session. */
+@Composable
+private fun DesktopModeButtons(selectedMode: DesktopMode, onSelect: (DesktopMode) -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SegmentedChoice(
+            options = DesktopMode.entries,
+            selectedOption = selectedMode,
+            onSelect = onSelect,
+            label = { stringResource(if (it == DesktopMode.MIRROR) R.string.connection_desktop_mirror else R.string.connection_desktop_extend) },
+            icon = { null },
+        )
+        Text(stringResource(if (selectedMode == DesktopMode.MIRROR) R.string.connection_desktop_mirror_body else R.string.connection_desktop_extend_body),
+            style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+    }
+}
+
+/** A row of connected toggle buttons where exactly one option is checked. */
+@Composable
+private fun <T> SegmentedChoice(
+    options: List<T>,
+    selectedOption: T,
+    onSelect: (T) -> Unit,
+    label: @Composable (T) -> String,
+    icon: (T) -> Int?,
+) {
     // The connected group defaults supply asymmetric ends and shape morphing on press/selection.
     Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        ConnectionMode.entries.forEachIndexed { index, mode ->
-            val active = mode == selectedMode
-            val label = stringResource(if (mode == ConnectionMode.NETWORK) R.string.connection_wifi else R.string.connection_usb)
+        options.forEachIndexed { index, option ->
+            val active = option == selectedOption
             ToggleButton(
                 checked = active,
-                onCheckedChange = { if (!active) onSelect(mode) },
+                onCheckedChange = { if (!active) onSelect(option) },
                 shapes = if (index == 0) ButtonGroupDefaults.connectedLeadingButtonShapes() else ButtonGroupDefaults.connectedTrailingButtonShapes(),
                 modifier = Modifier.weight(1f).heightIn(min = 56.dp).semantics {
                     role = Role.RadioButton
@@ -579,9 +619,12 @@ private fun ConnectionModeButtons(selectedMode: ConnectionMode, onSelect: (Conne
                 },
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
             ) {
-                Symbol(if (mode == ConnectionMode.NETWORK) R.drawable.ic_wifi else R.drawable.ic_usb, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.size(8.dp))
-                Text(label)
+                val drawable = icon(option)
+                if (drawable != null) {
+                    Symbol(drawable, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.size(8.dp))
+                }
+                Text(label(option))
             }
         }
     }
@@ -742,7 +785,7 @@ private fun openSystemSettings(context: Context, action: String): Boolean {
 private fun PhoneConnectionPreview() {
     OpenDisplayTheme(darkTheme = false, dynamicColor = false) {
         ConnectionScreen(
-            ReceiverUiState(listening = true, serviceName = "Pixel 9", localAddresses = listOf("192.168.1.24")), {},
+            ReceiverUiState(listening = true, serviceName = "Pixel 9", localAddresses = listOf("192.168.1.24")), {}, {},
             onConnectMac = {}, onAutoConnect = {},
             nearbyMacs = listOf(NearbyMac("MacBook Pro", "192.168.1.10", 9011)),
         )
@@ -754,7 +797,7 @@ private fun PhoneConnectionPreview() {
 private fun TabletConnectionPreview() {
     OpenDisplayTheme(darkTheme = true, dynamicColor = false) {
         ConnectionScreen(
-            ReceiverUiState(listening = true, serviceName = "OnePlus Pad", localAddresses = listOf("192.168.1.24")), {},
+            ReceiverUiState(listening = true, serviceName = "OnePlus Pad", localAddresses = listOf("192.168.1.24")), {}, {},
             onConnectMac = {}, onAutoConnect = {},
             nearbyMacs = listOf(NearbyMac("MacBook Pro", "192.168.1.10", 9011), NearbyMac("Mac mini", "192.168.1.11", 9011)),
         )
@@ -766,7 +809,7 @@ private fun TabletConnectionPreview() {
 private fun SearchingConnectionPreview() {
     OpenDisplayTheme(darkTheme = false, dynamicColor = false) {
         ConnectionScreen(
-            ReceiverUiState(listening = true, serviceName = "OnePlus Pad", localAddresses = listOf("192.168.1.24")), {},
+            ReceiverUiState(listening = true, serviceName = "OnePlus Pad", localAddresses = listOf("192.168.1.24")), {}, {},
             onConnectMac = {}, onAutoConnect = {},
         )
     }
@@ -777,7 +820,7 @@ private fun SearchingConnectionPreview() {
 private fun LargeTextTabletPreview() {
     OpenDisplayTheme(darkTheme = false, dynamicColor = false) {
         ConnectionScreen(
-            ReceiverUiState(listening = true, serviceName = "OnePlus Pad with a long device name", localAddresses = listOf("192.168.1.24")), {},
+            ReceiverUiState(listening = true, serviceName = "OnePlus Pad with a long device name", localAddresses = listOf("192.168.1.24")), {}, {},
             onConnectMac = {}, onAutoConnect = {},
         )
     }
@@ -788,7 +831,7 @@ private fun LargeTextTabletPreview() {
 @Composable
 private fun AccessibleConnectionPreview() {
     OpenDisplayTheme(darkTheme = false, dynamicColor = false) {
-        ConnectionScreen(ReceiverUiState(listening = true, serviceName = "Pixel Tablet", connectionMode = "USB"), {})
+        ConnectionScreen(ReceiverUiState(listening = true, serviceName = "Pixel Tablet", connectionMode = "USB"), {}, {})
     }
 }
 
@@ -796,7 +839,7 @@ private fun AccessibleConnectionPreview() {
 @Composable
 private fun OfflineConnectionPreview() {
     OpenDisplayTheme(darkTheme = false, dynamicColor = false) {
-        ConnectionScreen(ReceiverUiState(listening = true, serviceName = "Pixel 9"), {})
+        ConnectionScreen(ReceiverUiState(listening = true, serviceName = "Pixel 9"), {}, {})
     }
 }
 
@@ -804,7 +847,7 @@ private fun OfflineConnectionPreview() {
 @Composable
 private fun ConnectedConnectionPreview() {
     OpenDisplayTheme(darkTheme = true, dynamicColor = false) {
-        ConnectionScreen(ReceiverUiState(listening = true, connected = true, serviceName = "Pixel Tablet"), {})
+        ConnectionScreen(ReceiverUiState(listening = true, connected = true, serviceName = "Pixel Tablet"), {}, {})
     }
 }
 
@@ -812,6 +855,6 @@ private fun ConnectedConnectionPreview() {
 @Composable
 private fun UpdateConnectionPreview() {
     OpenDisplayTheme(darkTheme = false, dynamicColor = false) {
-        ConnectionScreen(ReceiverUiState(listening = true, connected = true, serviceName = "Pixel 9", problem = ReceiverProblem.UPDATE_REQUIRED), {})
+        ConnectionScreen(ReceiverUiState(listening = true, connected = true, serviceName = "Pixel 9", problem = ReceiverProblem.UPDATE_REQUIRED), {}, {})
     }
 }

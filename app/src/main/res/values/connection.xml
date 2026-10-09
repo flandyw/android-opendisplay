@@ -29,6 +29,10 @@
     <string name="connection_method">Connect your way</string>
     <string name="connection_wifi">Wi-Fi</string>
     <string name="connection_usb">USB cable</string>
+    <string name="connection_desktop_extend">Extend</string>
+    <string name="connection_desktop_mirror">Mirror</string>
+    <string name="connection_desktop_extend_body">Use this screen as an extra display for your Mac.</string>
+    <string name="connection_desktop_mirror_body">Show the same picture as your Mac’s main display.</string>
     <string name="connection_wifi_step_title">Use the same network</string>
     <string name="connection_wifi_step_body">Connect your Mac and this device to the same Wi-Fi or LAN.</string>
     <string name="connection_mac_step_title">Open OpenDisplay on your Mac</string>

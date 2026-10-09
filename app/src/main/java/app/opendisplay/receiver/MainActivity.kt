@@ -133,6 +133,7 @@ class MainActivity : ComponentActivity() {
         })
     }
     private var connectionMode: ConnectionMode = ConnectionMode.NETWORK
+    private var desktopMode: DesktopMode = DesktopMode.EXTEND
     private val returningToMain = MutableStateFlow(false)
     private val autoConnectEnabled by lazy { MutableStateFlow(prefs.getBoolean(KEY_AUTO_CONNECT, false)) }
     private val launchAutoConnect by lazy {
@@ -250,6 +251,7 @@ class MainActivity : ComponentActivity() {
 
         val app = application as OpenDisplayApp
         connectionMode = ConnectionMode.load(this)
+        desktopMode = DesktopMode.load(this)
         // Hold a Wi‑Fi Network for this process early — outbound reverse dial
         // needs it (GrapheneOS often has activeNetwork=null until requested).
         WifiNetworkHolder.start(this)
@@ -260,11 +262,13 @@ class MainActivity : ComponentActivity() {
                 status = "No H.264 decoder on this device — cannot stream",
                 deviceSummary = deviceInfo.summaryLine(),
                 connectionMode = connectionMode.name,
+                desktopMode = desktopMode.name,
             )
         } else {
             uiState.value = uiState.value.copy(
                 deviceSummary = deviceInfo.summaryLine(),
                 connectionMode = connectionMode.name,
+                desktopMode = desktopMode.name,
             )
         }
 
@@ -293,6 +297,7 @@ class MainActivity : ComponentActivity() {
                 uiState.value = next.copy(
                     deviceSummary = next.deviceSummary.ifEmpty { deviceInfo.summaryLine() },
                     connectionMode = connectionMode.name,
+                    desktopMode = desktopMode.name,
                 )
                 // Re-bind the live TextureView after a reconnect so the decoder
                 // has a Surface even if a prior session cleared codec state.
@@ -504,6 +509,7 @@ class MainActivity : ComponentActivity() {
                         )
                     },
                     onConnectionMode = { mode -> setConnectionMode(mode) },
+                    onDesktopMode = { mode -> setDesktopMode(mode) },
                     onConnectMac = ::connectToMac,
                     nearbyMacs = nearby,
                     onConnectNearby = ::connectToNearby,
@@ -603,6 +609,7 @@ class MainActivity : ComponentActivity() {
     private fun dialMac(key: String, host: String, port: Int, userInitiated: Boolean = true) {
         if (returningToMain.value || receiverStopped) return
         if (userInitiated) launchAutoConnect.cancel()
+        server.startNextSessionIn(mirror = desktopMode == DesktopMode.MIRROR)
         server.connectOutbound(host, port, key, userInitiated)
     }
 
@@ -676,6 +683,13 @@ class MainActivity : ComponentActivity() {
         ConnectionMode.save(this, mode)
         uiState.value = uiState.value.copy(connectionMode = mode.name)
         applyConnectionMode(mode)
+    }
+
+    private fun setDesktopMode(mode: DesktopMode) {
+        if (mode == desktopMode) return
+        desktopMode = mode
+        DesktopMode.save(this, mode)
+        uiState.value = uiState.value.copy(desktopMode = mode.name)
     }
 
     /**
@@ -982,6 +996,7 @@ private fun ReceiverScreen(
     updates: UpdatesUi,
     sidebar: @Composable () -> Unit,
     onConnectionMode: (ConnectionMode) -> Unit,
+    onDesktopMode: (DesktopMode) -> Unit,
     onConnectMac: (MacAddress) -> Unit,
     lastMacAddress: String,
     nearbyMacs: List<NearbyMac>,
@@ -1115,7 +1130,7 @@ private fun ReceiverScreen(
             StreamNotices(reconnecting = !state.streaming, showHint = showHint, onHintDone = onHintDone)
         } else {
             ConnectionScreen(
-                state, onConnectionMode, updates, onConnectMac, lastMacAddress,
+                state, onConnectionMode, onDesktopMode, updates, onConnectMac, lastMacAddress,
                 nearbyMacs, onConnectNearby,
                 autoConnectEnabled = autoConnectEnabled,
                 onAutoConnect = onAutoConnect,
