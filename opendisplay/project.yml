@@ -152,6 +152,7 @@ targets:
     sources:
       - MacTests
       - Mac/DisplayArrangement.swift
+      - Mac/OriginRestore.swift
       - Mac/StreamConfiguration.swift
       - Mac/VirtualCanvasSizing.swift
       - Mac/PhoneInfo.swift
@@ -160,6 +161,7 @@ targets:
       - Mac/SystemShortcuts.swift
       - Mac/AdbDevices.swift
       - Mac/ReversePairing.swift
+      - Mac/CaptureSourceCheck.swift
       - Mac/Log.swift
       - Mac/LogPolicies.swift
       - Shared/Protocol.swift

@@ -3,6 +3,14 @@ name: Release
 on:
   push:
     branches: [main]
+  # Recovery: build and upload every platform for a release that already
+  # exists (release-please created the tag, but a later step failed before
+  # the build jobs ran).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build, e.g. v1.26.0
+        required: true
 
 permissions:
   contents: write
@@ -21,13 +29,41 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      release_created: ${{ steps.rp.outputs.release_created }}
-      tag_name: ${{ steps.rp.outputs.tag_name }}
+      release_created: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.rp.outputs.release_created || steps.rp2.outputs.release_created || steps.rp3.outputs.release_created }}
+      tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || steps.rp.outputs.tag_name || steps.rp2.outputs.tag_name || steps.rp3.outputs.tag_name }}
     steps:
+      # Manifest mode (release-please-config.json, .release-please-manifest.json)
+      # only to bump linux/Cargo.toml and linux/Cargo.lock with the app
+      # version: one `simple` package at the root, tags stay `vX.Y.Z`.
+      #
+      # GitHub's GraphQL API intermittently answers release-please's commit
+      # query with "Something went wrong while executing your query" (seen
+      # after the large #298 merge). Retry twice; a release that was created
+      # before a failure is picked up as already tagged, so its builds would
+      # be skipped: rebuild it with the workflow_dispatch entry below.
       - uses: googleapis/release-please-action@v5
+        if: github.event_name == 'push'
         id: rp
-        with:
-          release-type: simple
+        continue-on-error: true
+      - if: github.event_name == 'push' && steps.rp.outcome == 'failure'
+        run: sleep 30
+      - uses: googleapis/release-please-action@v5
+        if: github.event_name == 'push' && steps.rp.outcome == 'failure'
+        id: rp2
+        continue-on-error: true
+      - if: github.event_name == 'push' && steps.rp2.outcome == 'failure'
+        run: sleep 60
+      - uses: googleapis/release-please-action@v5
+        if: github.event_name == 'push' && steps.rp2.outcome == 'failure'
+        id: rp3
+      - name: Check the release to rebuild exists
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a vX.Y.Z tag: $TAG"; exit 1; }
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
 
   build-ios:
     needs: release-please
@@ -35,6 +71,8 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -68,6 +106,19 @@ jobs:
           export APP_MARKETING_VERSION="${TAG_NAME#v}"
           bundle exec fastlane ios beta
 
+  # Linux sender tarballs and receiver Flatpak bundles, attached to the same
+  # GitHub release; the job also appends the Linux install notes to it. One
+  # version for every platform: the tag above is the Linux version too.
+  build-linux:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    # The called workflow's upload job needs to write the release.
+    permissions:
+      contents: write
+    uses: ./.github/workflows/linux-release.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+
   build-mac:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
@@ -79,6 +130,8 @@ jobs:
       SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
 
       - uses: ruby/setup-ruby@v1
         with:
