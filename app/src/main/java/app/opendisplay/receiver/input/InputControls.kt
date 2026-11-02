@@ -47,7 +47,7 @@ class InputControls(
 ) {
     private val state = MutableStateFlow(ControlsUi(
         rightSide = rightSide, palmReject = palmReject, controlIsCommand = controlIsCommand,
-        reverseScroll = reverseScroll, pointerSpeed = pointerSpeed.coerceIn(0.5f, 2f),
+        reverseScroll = reverseScroll, pointerSpeed = pointerSpeed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2f) ?: 1f,
     ))
     val ui: StateFlow<ControlsUi> = state
 
@@ -99,7 +99,7 @@ class InputControls(
     fun setPalmReject(on: Boolean) = state.update { it.copy(palmReject = on) }
     fun setControlIsCommand(on: Boolean) = state.update { it.copy(controlIsCommand = on) }
     fun setReverseScroll(on: Boolean) = state.update { it.copy(reverseScroll = on) }
-    fun setPointerSpeed(speed: Float) = state.update { it.copy(pointerSpeed = speed.coerceIn(0.5f, 2f)) }
+    fun setPointerSpeed(speed: Float) = state.update { it.copy(pointerSpeed = speed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2f) ?: 1f) }
     fun setPointerCaptured(on: Boolean) = state.update { it.copy(pointerCaptured = on) }
 
     /** The stream is gone for good: drop everything that only made sense while it ran. */

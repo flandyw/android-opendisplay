@@ -2,6 +2,8 @@
 
 package app.opendisplay.receiver.ui
 
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -49,9 +51,9 @@ internal fun UpdatesContent(ui: UpdatesUi) {
             Text(stringResource(R.string.updates_unsupported), style = MaterialTheme.typography.bodyMedium)
             return@Column
         }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.fillMaxWidth().toggleable(value = ui.autoCheck, role = Role.Switch, onValueChange = ui.onAutoCheck), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(stringResource(R.string.updates_auto), Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
-            Switch(checked = ui.autoCheck, onCheckedChange = ui.onAutoCheck)
+            Switch(checked = ui.autoCheck, onCheckedChange = null)
         }
         Text(stringResource(R.string.updates_source), style = MaterialTheme.typography.labelLarge)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -93,7 +95,7 @@ internal fun UpdatesContent(ui: UpdatesUi) {
             }
         }
         state.message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-        OutlinedButton(ui.onCheck, enabled = !state.checking && state.downloading == null, shapes = ButtonDefaults.shapes()) {
+        OutlinedButton(ui.onCheck, enabled = !state.busy, shapes = ButtonDefaults.shapes()) {
             Text(stringResource(R.string.updates_check))
         }
     }

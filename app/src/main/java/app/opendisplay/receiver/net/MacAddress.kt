@@ -20,7 +20,7 @@ data class MacAddress(val host: String, val port: Int) {
          */
         fun parse(input: String): MacAddress? {
             val raw = input.trim().removePrefix("tcp://")
-            if (raw.isEmpty() || raw.any { it.isWhitespace() || it == '/' }) return null
+            if (raw.isEmpty() || raw.length > 320 || raw.any { it.isWhitespace() || it.isISOControl() || it in "/\\?#@" }) return null
             val host: String
             val portText: String?
             if (raw.startsWith("[")) {
@@ -47,10 +47,11 @@ data class MacAddress(val host: String, val port: Int) {
                     portText = raw.substring(colon + 1)
                 }
             }
-            if (host.isEmpty()) return null
+            if (host.isEmpty() || host.any { it == '[' || it == ']' }) return null
+            if (raw.startsWith("[") && ':' !in host) return null
             val port = when {
                 portText == null -> WireProtocol.MAC_REVERSE_PORT
-                else -> portText.toIntOrNull()?.takeIf { it in 1..65535 } ?: return null
+                else -> portText.takeIf { it.isNotEmpty() && it.all { c -> c in '0'..'9' } }?.toIntOrNull()?.takeIf { it in 1..65535 } ?: return null
             }
             return MacAddress(host, port)
         }

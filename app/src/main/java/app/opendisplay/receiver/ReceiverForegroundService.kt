@@ -37,7 +37,7 @@ class ReceiverForegroundService : Service() {
             @Suppress("DEPRECATION")
             startForeground(NOTIFICATION_ID, notification)
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun ensureChannel() {
@@ -68,6 +68,9 @@ class ReceiverForegroundService : Service() {
             .setContentIntent(launch)
             .setOngoing(true)
             .setSilent(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
     }

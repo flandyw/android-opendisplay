@@ -110,6 +110,12 @@ import app.opendisplay.receiver.ui.CursorOverlayView
 import app.opendisplay.receiver.video.H264Decoder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import androidx.lifecycle.lifecycleScope
 
 class MainActivity : ComponentActivity() {
@@ -178,7 +184,10 @@ class MainActivity : ComponentActivity() {
     /** Last text we put on / read from the clipboard — stops sync echo loops. */
     private var lastSyncedClip: String? = null
     /** Hash of the last image we put on / read from the clipboard — stops image echo loops. */
-    private var lastSyncedImage = 0
+    @Volatile private var lastSyncedImage = 0
+    private var clipboardSendJob: Job? = null
+    private var clipboardReceiveJob: Job? = null
+    private val clipboardImageMutex = Mutex()
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
         val clip = clipboard?.primaryClip ?: return@OnPrimaryClipChangedListener
         val imageUri = ImageClip.imageUri(contentResolver, clip)
@@ -204,39 +213,45 @@ class MainActivity : ComponentActivity() {
         if (!::server.isInitialized || !server.hasCap(WireCaps.CLIP_IMAGE)) return
         if (ImageClip.isOurs(this, uri)) return
         // Decoding and re-encoding can take a moment; keep it off the UI thread.
-        Thread {
+        clipboardSendJob?.cancel()
+        clipboardSendJob = lifecycleScope.launch(Dispatchers.IO) {
             val png = try {
                 ImageClip.encodeForWire(contentResolver, uri)
             } catch (_: Exception) {
                 null
-            } ?: return@Thread
+            } ?: return@launch
+            ensureActive()
             val hash = png.contentHashCode()
-            if (hash == lastSyncedImage) return@Thread
+            if (hash == lastSyncedImage) return@launch
             lastSyncedImage = hash
             server.sendClipboardImage(png)
-        }.start()
+        }
     }
 
     /** An image copied on the Mac: serve it to other apps through the clipboard. */
     private fun receiveClipboardImage(png: ByteArray) {
         val hash = png.contentHashCode()
         lastSyncedImage = hash
-        Thread {
+        clipboardReceiveJob?.cancel()
+        clipboardReceiveJob = lifecycleScope.launch(Dispatchers.IO) {
             val uri = try {
-                ImageClip.store(this, png)
+                clipboardImageMutex.withLock {
+                    ensureActive()
+                    ImageClip.store(this@MainActivity, png)
+                }
             } catch (_: Exception) {
-                return@Thread
+                return@launch
             }
-            runOnUiThread {
+            ensureActive()
+            withContext(Dispatchers.Main) {
                 clipboard?.setPrimaryClip(ClipData.newUri(contentResolver, "Mac image", uri))
             }
-        }.start()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         preferHighRefreshRate()
 
         controls = InputControls(
@@ -412,7 +427,11 @@ class MainActivity : ComponentActivity() {
                 val nearby by nearbyMacs.collectAsState()
                 val hud by server.hud.collectAsState()
                 val caps by server.caps.collectAsState()
-                // A fresh Mac session knows nothing of our zoom; say it again.
+                LaunchedEffect(state.connected) {
+                    if (state.connected) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+                // A fresh Mac session must release input from the previous desktop.
                 LaunchedEffect(state.streaming) {
                     if (!state.streaming) releaseDesktopInput()
                 }
@@ -588,9 +607,7 @@ class MainActivity : ComponentActivity() {
                         clipboard?.removePrimaryClipChangedListener(clipListener)
                     }
                     Lifecycle.Event.ON_DESTROY -> {
-                        if (!isChangingConfigurations) {
-                            stopReceiver()
-                        }
+                        stopReceiver()
                     }
                     else -> Unit
                 }
@@ -811,6 +828,8 @@ class MainActivity : ComponentActivity() {
      * Hardware-keyboard passthrough: forward typing to the Mac while streaming.
      * System keys (back, volume, power, …) are left to Android.
      */
+    // Activity key dispatch must be overridden to forward external keyboard input.
+    @android.annotation.SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // This local escape chord works even while Android owns the mouse capture.
         if (::server.isInitialized && uiState.value.streaming && event.isCtrlPressed && event.isAltPressed &&
@@ -866,6 +885,7 @@ class MainActivity : ComponentActivity() {
         if (::touchMapper.isInitialized) touchMapper.releaseInputs()
         if (::controls.isInitialized) controls.setPointerCaptured(false)
         deadAccent = 0
+        textForwarder.interrupted()
     }
 
     private fun setPointerCapture(capture: Boolean) {
@@ -907,7 +927,7 @@ class MainActivity : ComponentActivity() {
 
     /** One character from the on-screen keyboard, as a key press the Mac can type. */
     private fun typeText(text: String) {
-        if (!::server.isInitialized || !server.hasCap(WireCaps.KEY)) return
+        if (!::server.isInitialized || !uiState.value.streaming || !server.hasCap(WireCaps.KEY)) return
         var i = 0
         while (i < text.length) {
             val cp = text.codePointAt(i)
@@ -928,6 +948,7 @@ class MainActivity : ComponentActivity() {
 
     private fun typeBackspace(count: Int) {
         if (!::server.isInitialized) return
+        if (!uiState.value.streaming) return
         repeat(count) { server.sendShortcut(MacKeys.DELETE, 0) }
     }
 

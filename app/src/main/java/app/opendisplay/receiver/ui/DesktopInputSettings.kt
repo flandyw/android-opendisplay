@@ -1,5 +1,7 @@
 package app.opendisplay.receiver.ui
 
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -53,9 +55,9 @@ fun DesktopInputSettings(
 
 @Composable
 private fun SettingSwitch(label: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange),
+        verticalAlignment = Alignment.CenterVertically) {
         Text(label, modifier = Modifier.weight(1f))
-        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled,
-            modifier = Modifier.semantics { contentDescription = label })
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
     }
 }

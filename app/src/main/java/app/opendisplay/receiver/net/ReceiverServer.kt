@@ -33,7 +33,6 @@ import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.net.Inet4Address
-import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
@@ -315,31 +314,31 @@ class ReceiverServer(
             val socket = Socket()
             socket.tcpNoDelay = true
             socket.keepAlive = true
-            socket.connect(InetSocketAddress(host, port), 2_000)
+            try {
+                socket.connect(InetSocketAddress(host, port), 2_000)
+            } catch (error: Exception) {
+                runCatching { socket.close() }
+                throw error
+            }
             Log.i(tag, "outbound loopback OK local=${socket.localSocketAddress}")
             return socket
         }
 
-        val target = preferIPv4(host)
-            ?: throw java.net.UnknownHostException("no address for $host")
         val network = WifiNetworkHolder.network(timeoutMs = 5_000)
-            ?: throw java.io.IOException("no Wi‑Fi Network for app — disable VPN lockdown / allow network")
+            ?: throw java.io.IOException("no Wi-Fi Network available for the app")
+        val addresses = network.getAllByName(host)
+        val target = addresses.firstOrNull { it is Inet4Address } ?: addresses.firstOrNull()
+            ?: throw java.net.UnknownHostException("no address for $host")
 
         val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         Log.i(tag, "using network=$network active=${cm?.activeNetwork}")
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && cm != null) {
-            try {
-                cm.bindProcessToNetwork(network)
-            } catch (e: Exception) {
-                Log.w(tag, "bindProcessToNetwork: ${e.message}")
-            }
-        }
-
-        val socket = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            network.socketFactory.createSocket(target, port)
-        } else {
-            Socket(target, port)
+        val socket = network.socketFactory.createSocket()
+        try {
+            socket.connect(InetSocketAddress(target, port), 2_000)
+        } catch (error: Exception) {
+            runCatching { socket.close() }
+            throw error
         }
         socket.tcpNoDelay = true
         socket.keepAlive = true
@@ -349,15 +348,6 @@ class ReceiverServer(
             "outbound OK local=${socket.localSocketAddress} remote=${socket.remoteSocketAddress}",
         )
         return socket
-    }
-
-    private fun preferIPv4(host: String): InetAddress? {
-        return try {
-            val all = InetAddress.getAllByName(host)
-            all.firstOrNull { it is Inet4Address } ?: all.firstOrNull()
-        } catch (_: Exception) {
-            null
-        }
     }
 
     fun stop() {
@@ -383,6 +373,9 @@ class ReceiverServer(
         serverSocket = null
         decoder.release()
         audioPlayer.release()
+        outbox.close()
+        while (outbox.tryReceive().isSuccess) { }
+        mainHandler.removeCallbacksAndMessages(null)
         scope.cancel()
         publish(
             state.copy(
@@ -399,6 +392,8 @@ class ReceiverServer(
      * keys and treat the event as a plain touch.
      */
     fun sendTouch(phase: String, x: Double, y: Double, pen: PenState? = null, mods: Int = 0) {
+        if (!state.connected || !x.isFinite() || !y.isFinite()) return
+        if (pen != null && (!pen.pressure.isFinite() || !pen.tilt.isFinite() || !pen.azimuth.isFinite())) return
         val msg = JSONObject()
             .put("type", WireMessage.TOUCH)
             .put("phase", phase)
@@ -424,7 +419,7 @@ class ReceiverServer(
 
     /** Right-click etc. @return false if the Mac cannot take it (caller may fall back). */
     fun sendClick(button: String, x: Double, y: Double, mods: Int = 0): Boolean {
-        if (!hasCap(WireCaps.CLICK)) return false
+        if (!hasCap(WireCaps.CLICK) || !x.isFinite() || !y.isFinite()) return false
         val msg = JSONObject()
             .put("type", WireMessage.CLICK)
             .put("button", button)
@@ -497,6 +492,7 @@ class ReceiverServer(
     )
 
     fun sendScroll(dx: Double, dy: Double) {
+        if (!state.connected || !dx.isFinite() || !dy.isFinite() || (dx == 0.0 && dy == 0.0)) return
         outbox.trySend(
             JSONObject()
                 .put("type", WireMessage.SCROLL)
@@ -748,9 +744,10 @@ class ReceiverServer(
             return
         }
         val parsed = AnnexBParser.parse(payload)
+        if (parsed.nalus.isEmpty()) return
         noteVideoFrame(payload.size, parsed.captureMs, parsed.sendMs)
         decoder.feedParsed(parsed)
-        if (!state.streaming) {
+        if (parsed.decoderInputSize > 0 && !state.streaming) {
             publish(state.copy(status = "Streaming", streaming = true))
         }
     }
@@ -797,7 +794,7 @@ class ReceiverServer(
                 WireMessage.PONG -> {
                     val t1 = obj.optDouble("t", Double.NaN)
                     val mt = obj.optDouble("mt", Double.NaN)
-                    if (t1.isNaN() || mt.isNaN()) return
+                    if (!t1.isFinite() || !mt.isFinite()) return
                     val t2 = System.currentTimeMillis().toDouble()
                     val rtt = t2 - t1
                     if (rtt < 0 || rtt >= 2000) return
@@ -819,7 +816,7 @@ class ReceiverServer(
                     Log.i(tag, "welcome from Mac pv=$pv caps=${capsFlow.value}")
                     // The Mac says which mode this session really is, so the
                     // sidebar toggle is right even after a Mac-side change.
-                    obj.optString("mode").takeIf { it.isNotEmpty() }?.let { mode ->
+                    obj.optString("mode").takeIf { it == "mirror" || it == "extend" }?.let { mode ->
                         mainHandler.post { onMode(mode == "mirror") }
                     }
                     // Then apply the mode picked on the connection screen. The Mac
@@ -846,7 +843,7 @@ class ReceiverServer(
                     val visible = obj.optInt("v", 0) == 1
                     val x = obj.optDouble("x", 0.0)
                     val y = obj.optDouble("y", 0.0)
-                    mainHandler.post { onCursor(x, y, visible) }
+                    if (x.isFinite() && y.isFinite()) mainHandler.post { onCursor(x, y, visible) }
                 }
                 WireMessage.CURSOR_IMG -> {
                     val png = obj.optString("png")
@@ -918,6 +915,7 @@ class ReceiverServer(
                 clientOutput = null
                 outputSocket = null
                 Log.w(tag, "send failed: ${e.message}")
+                runCatching { socket.close() }
             }
         }
     }

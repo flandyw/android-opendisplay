@@ -51,7 +51,9 @@ object ImageClip {
     fun imageUri(resolver: ContentResolver, clip: ClipData?): Uri? {
         if (clip == null || clip.itemCount == 0) return null
         val uri = clip.getItemAt(0).uri ?: return null
-        val type = resolver.getType(uri) ?: clip.description.getMimeType(0)
+        if (uri.scheme != ContentResolver.SCHEME_CONTENT) return null
+        val type = runCatching { resolver.getType(uri) }.getOrNull()
+            ?: if (clip.description.mimeTypeCount > 0) clip.description.getMimeType(0) else null
         return uri.takeIf { type?.startsWith("image/") == true }
     }
 
@@ -75,10 +77,10 @@ object ImageClip {
     private fun pngBytes(source: Bitmap, percent: Int): ByteArray? {
         val width = source.width * percent / 100
         val height = source.height * percent / 100
-        if (width < 16 || height < 16) return null
+        if (width < 1 || height < 1) return null
         val scaled = if (percent == 100) source else Bitmap.createScaledBitmap(source, width, height, true)
         return try {
-            ByteArrayOutputStream().also { scaled.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+            ByteArrayOutputStream().let { if (scaled.compress(Bitmap.CompressFormat.PNG, 100, it)) it.toByteArray() else null }
         } finally {
             if (scaled !== source) scaled.recycle()
         }
@@ -86,9 +88,23 @@ object ImageClip {
 
     /** Stores an image from the Mac and returns the content URI to put on the clipboard. */
     fun store(context: Context, png: ByteArray): Uri {
-        val dir = File(context.cacheDir, DIR).apply { mkdirs() }
+        require(png.isNotEmpty() && png.size <= MAX_PNG_BYTES) { "Invalid clipboard image size" }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(png, 0, png.size, bounds)
+        require(bounds.outMimeType == "image/png" && bounds.outWidth in 1..MAX_EDGE && bounds.outHeight in 1..MAX_EDGE) {
+            "Invalid clipboard PNG"
+        }
+        val dir = File(context.cacheDir, DIR).apply { check(isDirectory || mkdirs()) }
         val file = File(dir, FILE)
-        file.writeBytes(png)
+        val atomic = android.util.AtomicFile(file)
+        val output = atomic.startWrite()
+        try {
+            output.write(png)
+            atomic.finishWrite(output)
+        } catch (error: Throwable) {
+            atomic.failWrite(output)
+            throw error
+        }
         return FileProvider.getUriForFile(context, authority(context), file)
     }
 

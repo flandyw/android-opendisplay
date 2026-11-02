@@ -72,6 +72,7 @@ class UpdateChecker(private val context: Context) {
 
     /** Downloads to a temporary file, checks SHA-256, then atomically exposes the APK to the UI. */
     fun download(update: AppUpdate, onProgress: (UpdateDownloadProgress) -> Unit = {}): File {
+        require(isValidApkName(update.apkName)) { "Invalid APK name" }
         val directory = directory
         val target = File(directory, "${update.versionCode}-${update.apkName}")
         val temporary = File(directory, "${update.versionCode}-${update.apkName}.part")
@@ -113,9 +114,10 @@ class UpdateChecker(private val context: Context) {
                     var lastSampleAt = SystemClock.elapsedRealtime()
                     var lastSampleBytes = 0L
                     while (input.read(buffer).also { read = it } != -1) {
-                        output.write(buffer, 0, read)
+                        if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("Download interrupted")
                         copied += read
                         if (copied > MAX_APK_BYTES) throw IOException("The update is unexpectedly large")
+                        output.write(buffer, 0, read)
                         val now = SystemClock.elapsedRealtime()
                         val elapsed = now - lastSampleAt
                         if (elapsed >= 500) {
@@ -125,6 +127,7 @@ class UpdateChecker(private val context: Context) {
                             lastSampleBytes = copied
                         }
                     }
+                    if (copied == 0L || (total >= 0 && copied != total)) throw IOException("The update download is incomplete")
                 }
             }
         } finally {
@@ -135,7 +138,17 @@ class UpdateChecker(private val context: Context) {
     private fun getText(url: String, source: UpdateSource): String {
         val connection = open(url, source)
         return try {
-            connection.inputStream.bufferedReader().use { it.readText() }
+            if (connection.contentLengthLong > MAX_TEXT_BYTES) throw IOException("Update metadata is too large")
+            connection.inputStream.use { input ->
+                val bytes = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                var read: Int
+                while (input.read(buffer).also { read = it } != -1) {
+                    if (bytes.size() + read > MAX_TEXT_BYTES) throw IOException("Update metadata is too large")
+                    bytes.write(buffer, 0, read)
+                }
+                bytes.toString(Charsets.UTF_8.name())
+            }
         } finally {
             connection.disconnect()
         }
@@ -155,8 +168,13 @@ class UpdateChecker(private val context: Context) {
                 setRequestProperty("Accept", if (source == UpdateSource.GITHUB) "application/vnd.github+json, application/octet-stream" else "application/json")
                 setRequestProperty("User-Agent", "OpenDisplay/${installedVersionName()}")
             }
-            connection.connect()
-            val code = connection.responseCode
+            val code = try {
+                connection.connect()
+                connection.responseCode
+            } catch (error: Exception) {
+                connection.disconnect()
+                throw error
+            }
             if (code in 300..399 && redirects < MAX_REDIRECTS) {
                 val location = connection.getHeaderField("Location")
                 connection.disconnect()
@@ -178,6 +196,7 @@ class UpdateChecker(private val context: Context) {
     private companion object {
         private const val MAX_APK_BYTES = 100L * 1024 * 1024
         private const val MAX_REDIRECTS = 5
+        private const val MAX_TEXT_BYTES = 1024 * 1024
     }
 
     private fun sha256(file: File): String {

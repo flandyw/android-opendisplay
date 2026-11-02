@@ -27,12 +27,13 @@ class DesktopPointer(
     private var lastTap = Long.MIN_VALUE
 
     fun position(nx: Double, ny: Double) {
+        if (!nx.isFinite() || !ny.isFinite()) return
         x = nx.coerceIn(0.0, 1.0)
         y = ny.coerceIn(0.0, 1.0)
     }
 
     fun move(dx: Double, dy: Double, width: Int, height: Int) {
-        if (width <= 0 || height <= 0) return
+        if (width <= 0 || height <= 0 || !dx.isFinite() || !dy.isFinite()) return
         val speed = controls.ui.value.pointerSpeed
         position(x + dx * speed / width, y + dy * speed / height)
         motion()
@@ -62,6 +63,7 @@ class DesktopPointer(
     }
 
     fun wheel(dx: Double, dy: Double) {
+        if (!dx.isFinite() || !dy.isFinite()) return
         val direction = if (controls.ui.value.reverseScroll) -1 else 1
         if (dx != 0.0 || dy != 0.0) scroll(dx * direction, dy * direction)
     }
@@ -81,6 +83,7 @@ class DesktopPointer(
     }
 
     fun contactMove(count: Int, dx: Double, dy: Double, width: Int, height: Int) {
+        if (count <= 0 || !dx.isFinite() || !dy.isFinite()) return
         fingers = maxOf(fingers, count)
         travelX += dx
         travelY += dy

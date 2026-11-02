@@ -78,4 +78,58 @@ class FrameCodecTest {
     }
 
     private fun startCode() = byteArrayOf(0, 0, 0, 1)
+
+    @Test(expected = IllegalArgumentException::class)
+    fun cannotWriteEmptyFrame() { FrameCodec.writeFrame(ByteArrayOutputStream(), ByteArray(0)) }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun cannotReadEmptyFrame() { FrameCodec.readFrame(ByteArrayInputStream(ByteArray(4))) }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun oversizedHeaderRejectedBeforeAllocation() {
+        FrameCodec.readFrame(ByteArrayInputStream(byteArrayOf(1, 0, 0, 1)))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun unsignedHugeHeaderRejected() {
+        FrameCodec.readFrame(ByteArrayInputStream(byteArrayOf(-1, -1, -1, -1)))
+    }
+
+    @Test fun partialHeadersThrow() {
+        for (size in 1..3) {
+            try { FrameCodec.readFrame(ByteArrayInputStream(ByteArray(size))); throw AssertionError() }
+            catch (_: java.io.EOFException) { }
+        }
+    }
+
+    @Test(expected = java.io.EOFException::class)
+    fun truncatedBodyThrows() { FrameCodec.readFrame(ByteArrayInputStream(byteArrayOf(0, 0, 0, 2, 1))) }
+
+    @Test fun zeroProgressReadDoesNotSpin() {
+        val input = object : ByteArrayInputStream(byteArrayOf(0, 0, 0, 1, 42)) {
+            override fun read(b: ByteArray, off: Int, len: Int) = 0
+        }
+        assertArrayEquals(byteArrayOf(42), FrameCodec.readFrame(input))
+    }
+
+    @Test fun consecutiveFramesKeepBoundaries() {
+        val out = ByteArrayOutputStream()
+        FrameCodec.writeFrame(out, byteArrayOf(1))
+        FrameCodec.writeFrame(out, byteArrayOf(2, 3))
+        val input = ByteArrayInputStream(out.toByteArray())
+        assertArrayEquals(byteArrayOf(1), FrameCodec.readFrame(input))
+        assertArrayEquals(byteArrayOf(2, 3), FrameCodec.readFrame(input))
+        assertNull(FrameCodec.readFrame(input))
+    }
+
+    @Test fun percentileIgnoresInfinity() {
+        assertEquals(2.0, app.opendisplay.receiver.video.H264Decoder.percentile(listOf(Double.POSITIVE_INFINITY, 2.0), 0.5), 0.0)
+    }
+
+    @Test fun percentileClampsBeforeMultiplying() {
+        val values = listOf(1.0, 2.0)
+        assertEquals(1.0, app.opendisplay.receiver.video.H264Decoder.percentile(values, -Double.MAX_VALUE), 0.0)
+        assertEquals(2.0, app.opendisplay.receiver.video.H264Decoder.percentile(values, Double.MAX_VALUE), 0.0)
+    }
+
 }

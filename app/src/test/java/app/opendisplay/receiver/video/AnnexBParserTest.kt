@@ -150,4 +150,35 @@ class AnnexBParserTest {
             if (offset + 4 < end) payload.copyOfRange(offset + 4, end) else null
         }
     }
+
+    @Test fun largeClipboardControlIsNotVideo() {
+        val payload = ("{\"type\":\"clipImg\",\"png\":\"" + "a".repeat(800_000) + "\"}").toByteArray()
+        assertTrue(AnnexBParser.isJsonControl(payload))
+    }
+
+    @Test fun controlFrameOverLimitIsRejected() {
+        assertFalse(AnnexBParser.isJsonControl(byteArrayOf(123) + ByteArray(1024 * 1024)))
+    }
+
+    @Test fun metadataAllowsWhitespaceBeforeColon() {
+        val parsed = AnnexBParser.parse("{\"cap\" : 12.5}".toByteArray() + startCode + byteArrayOf(0x65))
+        assertEquals(12.5, parsed.captureMs!!, 0.0)
+    }
+
+    @Test fun exponentMetadataIsNotTruncated() {
+        val parsed = AnnexBParser.parse("{\"cap\":1.25e+3}".toByteArray() + startCode + byteArrayOf(0x65))
+        assertEquals(1250.0, parsed.captureMs!!, 0.0)
+    }
+
+    @Test fun infiniteMetadataIsDiscarded() {
+        assertNull(AnnexBParser.parse("{\"cap\":1e999}".toByteArray()).captureMs)
+    }
+
+    @Test fun oversizedMetadataIsNotDecoded() {
+        val payload = ("{\"cap\":1," + " ".repeat(4096)).toByteArray() + startCode + byteArrayOf(0x65)
+        val parsed = AnnexBParser.parse(payload)
+        assertNull(parsed.captureMs)
+        assertTrue(parsed.hasIdr)
+    }
+
 }

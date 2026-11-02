@@ -37,11 +37,18 @@ class TextForwarder(
         if (count <= 0) return
         backspace(count)
         // Whatever it erased from the composing region is gone from the Mac too.
-        var left = count
-        while (left > 0 && composing.isNotEmpty()) {
-            composing = composing.substring(0, composing.offsetByCodePoints(composing.length, -1))
-            left--
-        }
+        val removed = minOf(count, composing.codePointCount(0, composing.length))
+        composing = composing.substring(0, composing.offsetByCodePoints(composing.length, -removed))
+    }
+
+    /** Android's legacy deletion API counts UTF-16 units; never split a code point. */
+    fun deleteBeforeUtf16(count: Int) {
+        if (count <= 0) return
+        var start = (composing.length - count).coerceAtLeast(0)
+        if (start > 0 && start < composing.length && Character.isLowSurrogate(composing[start]) &&
+            Character.isHighSurrogate(composing[start - 1])) start--
+        val points = composing.codePointCount(start, composing.length)
+        deleteBefore(points + (count - composing.length).coerceAtLeast(0))
     }
 
     /** A hardware-style key (Enter, arrows…) ends any composition in progress. */

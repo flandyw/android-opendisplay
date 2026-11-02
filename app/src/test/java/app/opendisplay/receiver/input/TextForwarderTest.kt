@@ -54,4 +54,40 @@ class TextForwarderTest {
         forwarder.setComposing("😁")
         assertEquals("😀<1>😁", log.toString())
     }
+
+    @Test fun utf16DeletionTreatsEmojiAsOneKey() {
+        forwarder.setComposing("a😀")
+        forwarder.deleteBeforeUtf16(2)
+        forwarder.setComposing("a")
+        assertEquals("a😀<1>", log.toString())
+    }
+
+    @Test fun utf16DeletionNeverLeavesHalfEmoji() {
+        forwarder.setComposing("😀")
+        forwarder.deleteBeforeUtf16(1)
+        forwarder.setComposing("")
+        assertEquals("😀<1>", log.toString())
+    }
+
+    @Test fun deletionBeyondCompositionIncludesEarlierText() {
+        forwarder.setComposing("😀")
+        forwarder.deleteBeforeUtf16(3)
+        assertEquals("😀<2>", log.toString())
+    }
+
+    @Test fun bulkDeletionClearsComposition() {
+        forwarder.setComposing("abc😀")
+        forwarder.deleteBefore(Int.MAX_VALUE)
+        forwarder.setComposing("x")
+        assertEquals("abc😀<2147483647>x", log.toString())
+    }
+
+    @Test fun nonpositiveDeletionIsIgnored() {
+        forwarder.setComposing("abc")
+        forwarder.deleteBeforeUtf16(-1)
+        forwarder.deleteBefore(0)
+        forwarder.setComposing("abc")
+        assertEquals("abc", log.toString())
+    }
+
 }

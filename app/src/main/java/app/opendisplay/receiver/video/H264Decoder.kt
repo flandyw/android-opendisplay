@@ -4,6 +4,7 @@ import android.media.MediaCodec
 import android.media.MediaFormat
 import android.os.Build
 import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
@@ -76,7 +77,7 @@ class H264Decoder(
 
     @Synchronized
     fun setSurface(surface: Surface?) {
-        if (this.surface === surface && surface != null) return
+        if (released.get() || this.surface === surface) return
         this.surface = surface
         // Surface changed — force reconfigure with next SPS/PPS.
         if (configured) {
@@ -98,6 +99,9 @@ class H264Decoder(
         sps = null
         pps = null
         consecutiveInputDrops = 0
+        lastKeyframeRequestMs = 0L
+        queuedAtNs.fill(0L)
+        synchronized(sampleLock) { decodeMsSamples.clear() }
     }
 
     fun feed(payload: ByteArray) {
@@ -171,18 +175,28 @@ class H264Decoder(
         } catch (e: Exception) {
             // Some OEMs reject vendor keys — retry bare format once.
             Log.w(tag, "configure with low-latency hints failed, retrying plain: ${e.message}")
-            c.release()
+            runCatching { c.release() }
             val plain = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
             plain.setByteBuffer("csd-0", ByteBuffer.wrap(withStartCode(sps)))
             plain.setByteBuffer("csd-1", ByteBuffer.wrap(withStartCode(pps)))
             val c2 = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-            c2.configure(plain, surf, null, 0)
-            c2.start()
+            try {
+                c2.configure(plain, surf, null, 0)
+                c2.start()
+            } catch (error: Exception) {
+                runCatching { c2.release() }
+                throw error
+            }
             startOutputThread(c2)
             Log.i(tag, "decoder configured (plain) ${width}x${height} name=${c2.name}")
             return
         }
-        c.start()
+        try {
+            c.start()
+        } catch (error: Exception) {
+            runCatching { c.release() }
+            throw error
+        }
         startOutputThread(c)
         Log.i(tag, "decoder configured ${width}x${height} name=${c.name} attempt=$configureAttempts")
     }
@@ -251,7 +265,7 @@ class H264Decoder(
                 return false
             }
             consecutiveInputDrops = 0
-            val buf = c.getInputBuffer(inIndex) ?: return false
+            val buf = checkNotNull(c.getInputBuffer(inIndex)) { "missing decoder input buffer" }
             buf.clear()
             if (buf.remaining() < parsed.decoderInputSize) {
                 Log.w(tag, "input buffer too small ${buf.remaining()} < ${parsed.decoderInputSize}")
@@ -276,8 +290,8 @@ class H264Decoder(
 
     /** At most one keyframe request per 500ms. */
     private fun requestKeyframeThrottled() {
-        val now = System.currentTimeMillis()
-        if (now - lastKeyframeRequestMs < 500) return
+        val now = SystemClock.elapsedRealtime()
+        if (lastKeyframeRequestMs != 0L && now - lastKeyframeRequestMs < 500) return
         lastKeyframeRequestMs = now
         onNeedKeyframe()
     }
@@ -346,6 +360,7 @@ class H264Decoder(
     }
 
     private fun recordDecodeMs(pts: Long) {
+        if (pts < 0) return
         val queuedAt = queuedAtNs[(pts % QUEUE_RING).toInt()]
         if (queuedAt == 0L) return
         val ms = (System.nanoTime() - queuedAt) / 1_000_000.0
@@ -423,11 +438,11 @@ class H264Decoder(
             // toTypedArray/sorted runs on another thread.
             val sorted = ArrayList<Double>(samples.size)
             for (v in samples) {
-                if (v != null && !v.isNaN()) sorted.add(v)
+                if (v != null && v.isFinite()) sorted.add(v)
             }
             if (sorted.isEmpty()) return 0.0
             sorted.sort()
-            val idx = ((sorted.size - 1) * p).toInt().coerceIn(0, sorted.lastIndex)
+            val idx = ((sorted.size - 1) * (if (p.isNaN()) 0.5 else p.coerceIn(0.0, 1.0))).toInt().coerceIn(0, sorted.lastIndex)
             return sorted[idx]
         }
     }

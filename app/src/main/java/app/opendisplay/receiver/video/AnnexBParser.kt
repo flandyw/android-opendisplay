@@ -48,7 +48,7 @@ object AnnexBParser {
     fun isJsonControl(payload: ByteArray): Boolean {
         // Cursor sprites are base64 PNG (Mac caps raw PNG at 24KB ≈ ~32KB b64).
         // Leave headroom so cursorImg never falls through as video.
-        if (payload.isEmpty() || payload.size >= 64 * 1024) return false
+        if (payload.isEmpty() || payload.size > 1024 * 1024) return false
         if (payload[0] != '{'.code.toByte()) return false
         for (b in payload) {
             if (b == 0.toByte()) return false
@@ -62,7 +62,7 @@ object AnnexBParser {
         var sendMs: Double? = null
         val bodyStart = if (startCode >= 0) startCode else payload.size
 
-        if (bodyStart > 0) {
+        if (bodyStart in 1..4096 && payload[0] == '{'.code.toByte()) {
             val meta = String(payload, 0, bodyStart, Charsets.UTF_8)
             // Lightweight parse — avoid full JSON dependency on the hot path.
             captureMs = extractDouble(meta, "cap")
@@ -101,14 +101,17 @@ object AnnexBParser {
     }
 
     private fun extractDouble(json: String, key: String): Double? {
-        val needle = "\"$key\":"
+        val needle = "\"$key\""
         val idx = json.indexOf(needle)
         if (idx < 0) return null
         var i = idx + needle.length
         while (i < json.length && json[i].isWhitespace()) i++
+        if (i >= json.length || json[i] != ':') return null
+        i++
+        while (i < json.length && json[i].isWhitespace()) i++
         val start = i
-        while (i < json.length && (json[i].isDigit() || json[i] == '.' || json[i] == '-')) i++
+        while (i < json.length && (json[i].isDigit() || json[i] in ".+-eE")) i++
         if (i == start) return null
-        return json.substring(start, i).toDoubleOrNull()
+        return json.substring(start, i).toDoubleOrNull()?.takeIf { it.isFinite() }
     }
 }

@@ -50,4 +50,22 @@ class PairingTest {
         assertEquals("10.0.0.9", moved.first { it.name == "b-mac" }.host)
         assertEquals(listOf("A-mac"), moved.withoutMac("b-mac").map { it.name })
     }
+
+    @Test fun whitespaceTokensAreIgnored() {
+        val tokens = PairTokens(MemoryStorage())
+        tokens.save("Mac", "   ")
+        tokens.save("   ", "secret")
+        assertNull(tokens.tokenFor("Mac"))
+        assertNull(tokens.tokenFor("   "))
+    }
+
+    @Test fun corruptStoredTokensAreNotPresented() {
+        val storage = MemoryStorage()
+        val tokens = PairTokens(storage)
+        for (value in listOf("", "   ", "x".repeat(257))) {
+            storage.map["pair.Mac"] = value
+            assertNull(tokens.tokenFor("Mac"))
+        }
+    }
+
 }

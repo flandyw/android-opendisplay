@@ -16,7 +16,9 @@ class HardwareKeyForwarder(
         if (!down && press == null) return true
         val hardware = Mods.remapControl(metaMods, controls.ui.value.controlIsCommand)
         val bit = MacKeys.modifierFor(code)
-        val otherModifiers = held.filterKeys { it != identity }.values.fold(0) { m, p -> m or MacKeys.modifierFor(p.code) }
+        val otherModifiers = held.entries.fold(0) { m, entry ->
+            if (entry.key == identity) m else m or MacKeys.modifierFor(entry.value.code)
+        }
         val sidebarMods = press?.mods ?: controls.ui.value.let { it.oneShotMods or it.lockedMods }
         val mods = (if (down) hardware or bit else hardware and bit.inv()) or otherModifiers or sidebarMods
         val typing = chars.takeIf { bit == 0 && mods and (Mods.CMD or Mods.CTRL) == 0 }

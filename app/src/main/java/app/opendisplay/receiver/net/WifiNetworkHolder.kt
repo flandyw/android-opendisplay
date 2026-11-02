@@ -28,8 +28,9 @@ object WifiNetworkHolder {
     private var registered = false
 
     private val networkRef = AtomicReference<Network?>(null)
-    private var callback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var callback: ConnectivityManager.NetworkCallback? = null
 
+    @Synchronized
     fun start(context: Context) {
         val ctx = context.applicationContext
         appContext = ctx
@@ -39,28 +40,20 @@ object WifiNetworkHolder {
 
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
             .build()
 
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                if (callback !== this) return
                 networkRef.set(network)
                 Log.i(TAG, "Wi‑Fi network available: $network")
-                // Keep process bound so later dials don't hit activeNetwork=null.
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    try {
-                        cm.bindProcessToNetwork(network)
-                        Log.i(TAG, "process bound to Wi‑Fi (active=${cm.activeNetwork})")
-                    } catch (e: Exception) {
-                        Log.w(TAG, "bindProcessToNetwork: ${e.message}")
-                    }
-                }
             }
 
             override fun onLost(network: Network) {
-                if (networkRef.get() == network) {
-                    networkRef.set(null)
+                if (callback !== this) return
+                val current = networkRef.get()
+                if (current == network && networkRef.compareAndSet(current, null)) {
                     Log.i(TAG, "Wi‑Fi network lost")
                 }
             }
@@ -95,6 +88,7 @@ object WifiNetworkHolder {
         }
     }
 
+    @Synchronized
     fun stop() {
         val ctx = appContext ?: return
         val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -102,12 +96,6 @@ object WifiNetworkHolder {
         if (cm != null && cb != null) {
             try {
                 cm.unregisterNetworkCallback(cb)
-            } catch (_: Exception) {
-            }
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && cm != null) {
-            try {
-                cm.bindProcessToNetwork(null)
             } catch (_: Exception) {
             }
         }
@@ -133,6 +121,7 @@ object WifiNetworkHolder {
             try {
                 Thread.sleep(50)
             } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
                 break
             }
         }

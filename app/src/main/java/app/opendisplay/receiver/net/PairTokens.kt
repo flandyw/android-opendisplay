@@ -15,10 +15,11 @@ interface TokenStorage {
  * found automatically, or the typed address.
  */
 class PairTokens(private val storage: TokenStorage) {
-    fun tokenFor(mac: String?): String? = mac?.let { storage.get(KEY_PREFIX + it) }
+    fun tokenFor(mac: String?): String? = mac?.takeIf { it.isNotBlank() }?.let { storage.get(KEY_PREFIX + it) }
+        ?.takeIf { it.isNotBlank() && it.length <= MAX_TOKEN_CHARS }
 
     fun save(mac: String?, token: String) {
-        if (mac.isNullOrEmpty() || token.isEmpty() || token.length > MAX_TOKEN_CHARS) return
+        if (mac.isNullOrBlank() || token.isBlank() || token.length > MAX_TOKEN_CHARS) return
         storage.put(KEY_PREFIX + mac, token)
     }
 

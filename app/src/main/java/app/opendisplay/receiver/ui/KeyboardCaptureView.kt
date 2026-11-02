@@ -38,7 +38,8 @@ class KeyboardCaptureView(
             InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
         outAttrs.imeOptions = EditorInfo.IME_ACTION_NONE or
             EditorInfo.IME_FLAG_NO_FULLSCREEN or
-            EditorInfo.IME_FLAG_NO_EXTRACT_UI
+            EditorInfo.IME_FLAG_NO_EXTRACT_UI or
+            EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
         return object : BaseInputConnection(this, false) {
             override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
                 forwarder.commit(text.toString())
@@ -56,6 +57,13 @@ class KeyboardCaptureView(
             }
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+                if (beforeLength < 0 || afterLength != 0) return false
+                forwarder.deleteBeforeUtf16(beforeLength)
+                return true
+            }
+
+            override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean {
+                if (beforeLength < 0 || afterLength != 0) return false
                 forwarder.deleteBefore(beforeLength)
                 return true
             }
@@ -68,11 +76,13 @@ class KeyboardCaptureView(
     }
 
     fun showKeyboard() {
-        requestFocus()
-        imm()?.showSoftInput(this, 0)
+        if (requestFocus()) post {
+            if (isAttachedToWindow && hasWindowFocus() && hasFocus()) imm()?.showSoftInput(this, 0)
+        }
     }
 
     fun hideKeyboard() {
+        forwarder.finishComposing()
         imm()?.hideSoftInputFromWindow(windowToken, 0)
     }
 

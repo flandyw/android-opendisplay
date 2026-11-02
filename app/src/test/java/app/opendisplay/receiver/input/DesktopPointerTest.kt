@@ -146,4 +146,42 @@ class DesktopPointerTest {
         pointer.wheel(2.0, -4.0)
         assertEquals(listOf(-2.0 to 4.0), scrolls)
     }
+
+    @Test fun invalidPositionDoesNotPoisonFutureMotion() {
+        pointer.position(Double.NaN, 0.2)
+        pointer.position(0.2, Double.POSITIVE_INFINITY)
+        pointer.move(10.0, 0.0, 100, 100)
+        assertEquals(0.6, pointer.x, 0.00001)
+        assertEquals(0.5, pointer.y, 0.0)
+    }
+
+    @Test fun invalidMotionIsIgnored() {
+        pointer.move(Double.NaN, 1.0, 100, 100)
+        pointer.move(1.0, Double.NEGATIVE_INFINITY, 100, 100)
+        assertEquals(0.5, pointer.x, 0.0)
+        assertEquals(0.5, pointer.y, 0.0)
+    }
+
+    @Test fun invalidScrollIsIgnored() {
+        pointer.wheel(Double.NaN, 1.0)
+        pointer.wheel(1.0, Double.POSITIVE_INFINITY)
+        assertTrue(scrolls.isEmpty())
+    }
+
+    @Test fun invalidContactDoesNotPoisonGesture() {
+        pointer.beginContact(0)
+        pointer.contactMove(1, Double.NaN, 0.0, 100, 100)
+        pointer.contactMove(1, 1.0, 0.0, 100, 100)
+        pointer.endContact(100, false)
+        assertEquals(listOf("began", "ended"), touches)
+    }
+
+    @Test fun nonfinitePointerSpeedUsesDefault() {
+        for (value in listOf(Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY)) {
+            assertEquals(1f, InputControls(pointerSpeed = value).ui.value.pointerSpeed, 0f)
+            controls.setPointerSpeed(value)
+            assertEquals(1f, controls.ui.value.pointerSpeed, 0f)
+        }
+    }
+
 }

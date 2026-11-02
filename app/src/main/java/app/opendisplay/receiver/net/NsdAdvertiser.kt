@@ -16,13 +16,15 @@ class NsdAdvertiser(context: Context) {
     private val tag = "NsdAdvertiser"
     private val appContext = context.applicationContext
     private val nsd = appContext.getSystemService(Context.NSD_SERVICE) as NsdManager
-    private var registration: NsdManager.RegistrationListener? = null
+    @Volatile private var registration: NsdManager.RegistrationListener? = null
     private var registeredName: String? = null
     private var multicastLock: WifiManager.MulticastLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var registrationRetries = 0
 
+    @Synchronized
     fun register(serviceName: String, port: Int, installId: String, protocolVersion: Int = WireProtocol.VERSION) {
+        require(port in 1..65535) { "Invalid service port" }
         unregister()
         registrationRetries = 0
         acquireMulticastLock()
@@ -39,12 +41,14 @@ class NsdAdvertiser(context: Context) {
 
         val listener = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
+                if (registration !== this) return
                 registeredName = serviceInfo.serviceName
                 registrationRetries = 0
                 Log.i(tag, "registered as \"${serviceInfo.serviceName}\" on port $port")
             }
 
             override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                if (registration !== this) return
                 Log.e(tag, "registration failed: $errorCode")
                 // Some OEMs fail the first register after wake; retry once.
                 if (registrationRetries < 1) {
@@ -54,8 +58,9 @@ class NsdAdvertiser(context: Context) {
                         nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, this)
                     } catch (e: Exception) {
                         Log.e(tag, "register retry threw", e)
+                        unregister()
                     }
-                }
+                } else unregister()
             }
 
             override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) {
@@ -71,9 +76,11 @@ class NsdAdvertiser(context: Context) {
             nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, listener)
         } catch (e: Exception) {
             Log.e(tag, "registerService threw", e)
+            unregister()
         }
     }
 
+    @Synchronized
     fun unregister() {
         val listener = registration
         registration = null

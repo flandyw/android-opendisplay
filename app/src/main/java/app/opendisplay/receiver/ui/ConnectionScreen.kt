@@ -374,14 +374,14 @@ private fun MacAddressDialog(initial: String, onDismiss: () -> Unit, onConnect: 
                     supportingText = if (showError) {
                         { Text(stringResource(R.string.connection_mac_error)) }
                     } else null,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
+                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(onGo = { submit() }),
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
         },
         confirmButton = {
-            TextButton(onClick = submit) { Text(stringResource(R.string.connection_mac_connect)) }
+            TextButton(onClick = submit, enabled = text.isNotBlank()) { Text(stringResource(R.string.connection_mac_connect)) }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text(stringResource(android.R.string.cancel)) }

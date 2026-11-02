@@ -28,6 +28,7 @@ class CursorOverlayView @JvmOverloads constructor(
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val drawMatrix = Matrix()
+    private val fallbackPath = android.graphics.Path()
 
     private var sprite: Bitmap? = null
     private var normX = 0.5
@@ -46,28 +47,35 @@ class CursorOverlayView @JvmOverloads constructor(
         // Let touches pass through to the SurfaceView underneath.
         isClickable = false
         isFocusable = false
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
         setWillNotDraw(false)
     }
 
     fun setCursorPosition(x: Double, y: Double, isVisible: Boolean) {
+        if (!x.isFinite() || !y.isFinite()) return
+        if (normX == x && normY == y && visible == isVisible) return
         normX = x
         normY = y
         visible = isVisible
-        invalidate()
+        postInvalidateOnAnimation()
     }
 
     fun setCursorSprite(pngBase64: String, nw: Double, nh: Double, ax: Double, ay: Double) {
+        if (pngBase64.length > 48 * 1024 || !nw.isFinite() || !nh.isFinite() ||
+            nw <= 0 || nh <= 0 || !ax.isFinite() || !ay.isFinite()) return
         try {
             val bytes = Base64.decode(pngBase64, Base64.DEFAULT)
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (bounds.outWidth !in 1..512 || bounds.outHeight !in 1..512) return
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             if (bmp != null) {
-                sprite?.recycle()
                 sprite = bmp
                 normW = nw
                 normH = nh
                 anchorX = ax
                 anchorY = ay
-                invalidate()
+                postInvalidateOnAnimation()
             }
         } catch (_: Exception) {
             // Ignore corrupt sprites — keep last good one.
@@ -76,11 +84,10 @@ class CursorOverlayView @JvmOverloads constructor(
 
     fun clear() {
         visible = false
-        sprite?.recycle()
         sprite = null
         normW = 0.0
         normH = 0.0
-        invalidate()
+        postInvalidateOnAnimation()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -112,7 +119,8 @@ class CursorOverlayView @JvmOverloads constructor(
 
     private fun drawFallbackPointer(canvas: Canvas, x: Float, y: Float) {
         val scale = resources.displayMetrics.density
-        val path = android.graphics.Path().apply {
+        val path = fallbackPath.apply {
+            rewind()
             moveTo(x, y)
             lineTo(x, y + 16f * scale)
             lineTo(x + 4f * scale, y + 12f * scale)

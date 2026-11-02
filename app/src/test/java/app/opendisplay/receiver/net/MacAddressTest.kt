@@ -46,4 +46,19 @@ class MacAddressTest {
             assertEquals(parsed, MacAddress.parse(parsed.text))
         }
     }
+
+    @Test fun rejectsUrlComponentsAndControlCharacters() {
+        for (value in listOf("mac?x=1", "mac#fragment", "user@mac", "mac\\share", "mac\u0000", "mac\u0007")) {
+            assertNull(value, MacAddress.parse(value))
+        }
+    }
+
+    @Test fun rejectsMalformedBracketsAndSignedPorts() {
+        for (value in listOf("[mac]", "mac]", "[::1]]", "mac:+9011", "mac:-1")) {
+            assertNull(value, MacAddress.parse(value))
+        }
+    }
+
+    @Test fun rejectsUnboundedInput() { assertNull(MacAddress.parse("a".repeat(321))) }
+
 }
