@@ -25,7 +25,7 @@ class ReceiverForegroundService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        ensureChannel()
+        ensureChannel(this)
         val notification = buildNotification()
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(
@@ -38,20 +38,6 @@ class ReceiverForegroundService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
         return START_NOT_STICKY
-    }
-
-    private fun ensureChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val mgr = getSystemService(NotificationManager::class.java) ?: return
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            getString(R.string.fg_channel_name),
-            NotificationManager.IMPORTANCE_LOW,
-        ).apply {
-            description = getString(R.string.fg_channel_desc)
-            setShowBadge(false)
-        }
-        mgr.createNotificationChannel(channel)
     }
 
     private fun buildNotification(): Notification {
@@ -79,6 +65,21 @@ class ReceiverForegroundService : Service() {
         const val CHANNEL_ID = "opendisplay_receiver"
         const val NOTIFICATION_ID = 42
         const val ACTION_STOP = "app.opendisplay.receiver.STOP_FG"
+
+        /** Creates the app's one low-importance channel if needed; returns its id. */
+        fun ensureChannel(context: Context): String {
+            val mgr = context.getSystemService(NotificationManager::class.java) ?: return CHANNEL_ID
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                context.getString(R.string.fg_channel_name),
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = context.getString(R.string.fg_channel_desc)
+                setShowBadge(false)
+            }
+            mgr.createNotificationChannel(channel)
+            return CHANNEL_ID
+        }
 
         fun start(context: Context) {
             val i = Intent(context, ReceiverForegroundService::class.java)

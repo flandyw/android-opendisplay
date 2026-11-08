@@ -22,6 +22,11 @@ class MacHostBrowser(
     private val onHost: (host: String, port: Int, name: String) -> Unit,
     /** A Mac stopped advertising (quit, or left the network). */
     private val onLost: (name: String) -> Unit = {},
+    /** Also browses receivers (`_opensidecar._tcp`, port 9000) for screen sharing. */
+    private val serviceType: String = WireProtocol.MAC_HOST_SERVICE_TYPE,
+    private val defaultPort: Int = WireProtocol.MAC_REVERSE_PORT,
+    /** TXT `id` to ignore: this device's own receiver advertisement. */
+    private val skipId: String? = null,
 ) {
     private val tag = "MacHostBrowser"
     private val appContext = context.applicationContext
@@ -56,7 +61,7 @@ class MacHostBrowser(
             override fun onServiceFound(service: NsdServiceInfo) {
                 if (!isCurrent()) return
                 val type = service.serviceType ?: return
-                if (!type.contains("opendisplay-mac", ignoreCase = true)) return
+                if (!type.contains(serviceType.substringBefore("._tcp"), ignoreCase = true)) return
                 val key = "${service.serviceName}|$type"
                 synchronized(resolving) {
                     found.add(key)
@@ -95,9 +100,10 @@ class MacHostBrowser(
                                     resolving.remove(key)
                                     if (key !in found) return
                                 }
-                                val port = if (info.port > 0) info.port else WireProtocol.MAC_REVERSE_PORT
+                                if (skipId != null && txt(info, "id") == skipId) return
+                                val port = if (info.port > 0) info.port else defaultPort
                                 val host = pickIPv4(info)
-                                    ?: txtIp(info)
+                                    ?: txt(info, "ip")
                                     ?: info.host?.hostAddress
                                 if (host.isNullOrBlank()) {
                                     Log.w(tag, "resolved without host")
@@ -143,7 +149,7 @@ class MacHostBrowser(
         }
         discovery = listener
         try {
-            nsd.discoverServices(WireProtocol.MAC_HOST_SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
+            nsd.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener)
         } catch (e: Exception) {
             Log.e(tag, "discoverServices threw", e)
             retryDiscovery(listener)
@@ -194,10 +200,10 @@ class MacHostBrowser(
         return MacHostAddress.pickIPv4(addresses)
     }
 
-    private fun txtIp(info: NsdServiceInfo): String? {
+    private fun txt(info: NsdServiceInfo, key: String): String? {
         return try {
             val map = info.attributes ?: return null
-            val raw = map["ip"] ?: return null
+            val raw = map[key] ?: return null
             String(raw, Charsets.UTF_8).trim().ifBlank { null }
         } catch (_: Exception) {
             null
@@ -208,7 +214,7 @@ class MacHostBrowser(
         if (multicastLock?.isHeld == true) return
         try {
             val wifi = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return
-            val lock = wifi.createMulticastLock("opendisplay-mac-host")
+            val lock = wifi.createMulticastLock("opendisplay-browse$serviceType")
             lock.setReferenceCounted(false)
             lock.acquire()
             multicastLock = lock

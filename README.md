@@ -243,6 +243,16 @@ Android **USB tethering** creates an RNDIS/NCM link so the Mac can reach the dev
 
 Grant Mac **Screen Recording** + **Accessibility** if prompted.
 
+### Share this phone to a Mac (reverse)
+
+Open the **OpenDisplay Receiver** app on the Mac (`opendisplay/MacReceiver`). It
+appears under **Share this screen** on the Android connection page; tap it and
+accept Android's screen-capture prompt. The phone streams its screen as H.264
+over the normal OpenDisplay wire (Android acts as the *sender*), and keeps
+streaming in the background until you tap **Stop sharing** (here or in the
+notification). Any OpenDisplay receiver on the network shows up, not only Macs.
+Video only: no audio, and taps on the Mac are not sent back to the phone.
+
 ## Smoke checklist
 
 Run on the Android device/ROM you plan to support (reference device: Pixel

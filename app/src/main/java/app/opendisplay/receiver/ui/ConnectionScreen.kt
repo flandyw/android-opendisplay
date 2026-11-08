@@ -126,6 +126,8 @@ fun ConnectionScreen(
     onConnectNearby: (NearbyMac) -> Unit = {},
     autoConnectEnabled: Boolean = false,
     onAutoConnect: ((Boolean) -> Unit)? = null,
+    /** The reverse direction: stream this phone's screen to a receiver. */
+    share: ShareScreenUi? = null,
 ) {
     val context = LocalContext.current
     val mode = ConnectionMode.entries.firstOrNull { it.name == state.connectionMode }
@@ -219,6 +221,9 @@ fun ConnectionScreen(
                         connection()
                         DeviceIdentity(state, autoConnectEnabled, onAutoConnect) { sheet = ConnectionSheet.ADDRESS }
                     }
+                }
+                if (share != null && (share.targets.isNotEmpty() || share.sharingTo != null)) {
+                    Box(Modifier.widthIn(max = 560.dp).fillMaxWidth().padding(top = 24.dp)) { ShareScreen(share) }
                 }
                 Column(Modifier.widthIn(max = 1120.dp).fillMaxWidth().padding(top = 20.dp),
                     horizontalAlignment = Alignment.CenterHorizontally) {
@@ -343,6 +348,46 @@ private fun NearbyMacs(
             } else {
                 TextButton(onClick = onEnterAddress, modifier = Modifier.fillMaxWidth()) {
                     Text(stringResource(R.string.connection_mac_button))
+                }
+            }
+        }
+    }
+}
+
+/** State and actions for sharing this phone's screen to a receiver, such as the OpenDisplay Mac receiver. */
+data class ShareScreenUi(
+    val targets: List<NearbyMac>,
+    val sharingTo: String?,
+    val error: String?,
+    val onShare: (NearbyMac) -> Unit,
+    val onStop: () -> Unit,
+)
+
+@Composable
+private fun ShareScreen(share: ShareScreenUi) {
+    val colors = MaterialTheme.colorScheme
+    Surface(shape = RoundedCornerShape(28.dp), color = colors.surfaceContainerLow) {
+        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(stringResource(R.string.cast_title), style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.semantics { heading() })
+            val sharingTo = share.sharingTo
+            if (sharingTo != null) {
+                Text(stringResource(R.string.cast_notification_title, sharingTo), style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                FilledTonalButton(onClick = share.onStop, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                    Text(stringResource(R.string.cast_stop))
+                }
+                return@Column
+            }
+            Text(stringResource(R.string.cast_body), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+            share.error?.let {
+                Text(stringResource(R.string.cast_ended, it), style = MaterialTheme.typography.bodySmall, color = colors.error)
+            }
+            share.targets.forEach { target ->
+                TextButton(onClick = { share.onShare(target) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                    Text(stringResource(R.string.cast_to, target.name), modifier = Modifier.weight(1f),
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Symbol(R.drawable.ic_arrow_forward)
                 }
             }
         }

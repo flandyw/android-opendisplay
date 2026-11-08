@@ -1,6 +1,9 @@
 package app.opendisplay.receiver
 
 import android.content.ClipData
+import android.media.projection.MediaProjectionManager
+import androidx.activity.result.contract.ActivityResultContracts
+import app.opendisplay.receiver.cast.ScreenCastService
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.SurfaceTexture
@@ -103,6 +106,7 @@ import app.opendisplay.receiver.net.WifiNetworkHolder
 import app.opendisplay.receiver.protocol.WireCaps
 import app.opendisplay.receiver.protocol.WireProtocol
 import app.opendisplay.receiver.ui.ConnectionScreen
+import app.opendisplay.receiver.ui.ShareScreenUi
 import app.opendisplay.receiver.ui.OpenDisplayTheme
 import app.opendisplay.receiver.ui.SidebarOverlay
 import app.opendisplay.receiver.ui.UpdatesUi
@@ -125,6 +129,18 @@ class MainActivity : ComponentActivity() {
     private lateinit var streamLocks: StreamLocks
     private lateinit var discoveryProbe: DiscoveryProbe
     private var macHostBrowser: MacHostBrowser? = null
+    /** Receivers (Mac receiver app, iPad, …) this phone's screen can be shared to. */
+    private var castBrowser: MacHostBrowser? = null
+    private val castTargets = MutableStateFlow<List<NearbyMac>>(emptyList())
+    private var pendingCast: NearbyMac? = null
+    private val castConsent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val target = pendingCast ?: return@registerForActivityResult
+        pendingCast = null
+        val data = result.data
+        if (result.resultCode == RESULT_OK && data != null) {
+            ScreenCastService.start(this, result.resultCode, data, target.host, target.port, target.name)
+        }
+    }
     private lateinit var touchMapper: TouchMapper
     private val uiState = MutableStateFlow(ReceiverUiState())
 
@@ -397,12 +413,24 @@ class MainActivity : ComponentActivity() {
             onLost = { name -> runOnUiThread { nearbyMacs.value = nearbyMacs.value.withoutMac(name) } },
         )
 
+        castBrowser = MacHostBrowser(
+            this,
+            onHost = { host, port, name ->
+                runOnUiThread { castTargets.value = castTargets.value.withMac(NearbyMac(name, host, port)) }
+            },
+            onLost = { name -> runOnUiThread { castTargets.value = castTargets.value.withoutMac(name) } },
+            serviceType = WireProtocol.SERVICE_TYPE,
+            defaultPort = WireProtocol.DEFAULT_PORT,
+            skipId = app.installId,
+        )
+
         val defaultName = Build.MODEL.ifBlank { "OpenDisplay" }
         server.setServiceName(defaultName)
         updatePanelFromDisplay()
         server.start(WireProtocol.DEFAULT_PORT)
         discoveryProbe.start() // UDP multicast signature on :9010
         macHostBrowser?.start()
+        castBrowser?.start()
         applyConnectionMode(connectionMode)
         ReceiverForegroundService.start(this)
         app.updates.check(manual = false)
@@ -425,6 +453,9 @@ class MainActivity : ComponentActivity() {
                 )
                 val controlsUi by controls.ui.collectAsState()
                 val nearby by nearbyMacs.collectAsState()
+                val casts by castTargets.collectAsState()
+                val sharingTo by ScreenCastService.sharingTo.collectAsState()
+                val castError by ScreenCastService.error.collectAsState()
                 val hud by server.hud.collectAsState()
                 val caps by server.caps.collectAsState()
                 LaunchedEffect(state.connected) {
@@ -532,6 +563,11 @@ class MainActivity : ComponentActivity() {
                     onConnectMac = ::connectToMac,
                     nearbyMacs = nearby,
                     onConnectNearby = ::connectToNearby,
+                    castTargets = casts,
+                    sharingTo = sharingTo,
+                    castError = castError,
+                    onCast = ::shareScreenTo,
+                    onStopCast = { ScreenCastService.stop(this) },
                     autoConnectEnabled = autoConnect,
                     onAutoConnect = ::setAutoConnect,
                     lastMacAddress = prefs.getString(KEY_MAC_ADDRESS, "").orEmpty(),
@@ -623,6 +659,12 @@ class MainActivity : ComponentActivity() {
 
     private fun connectToNearby(mac: NearbyMac) = dialMac(mac.name, mac.host, mac.port)
 
+    /** Ask for screen-capture consent, then stream this phone to [target]. */
+    private fun shareScreenTo(target: NearbyMac) {
+        pendingCast = target
+        castConsent.launch(getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent())
+    }
+
     private fun dialMac(key: String, host: String, port: Int, userInitiated: Boolean = true) {
         if (returningToMain.value || receiverStopped) return
         if (userInitiated) launchAutoConnect.cancel()
@@ -658,6 +700,7 @@ class MainActivity : ComponentActivity() {
         nsd.unregister()
         if (::discoveryProbe.isInitialized) discoveryProbe.stop()
         macHostBrowser?.stop()
+        castBrowser?.stop()
     }
 
     private fun stopReceiver() {
@@ -1022,6 +1065,11 @@ private fun ReceiverScreen(
     lastMacAddress: String,
     nearbyMacs: List<NearbyMac>,
     onConnectNearby: (NearbyMac) -> Unit,
+    castTargets: List<NearbyMac>,
+    sharingTo: String?,
+    castError: String?,
+    onCast: (NearbyMac) -> Unit,
+    onStopCast: () -> Unit,
     autoConnectEnabled: Boolean,
     onAutoConnect: (Boolean) -> Unit,
     createKeyboardView: (Context) -> View,
@@ -1154,6 +1202,7 @@ private fun ReceiverScreen(
                 state, onConnectionMode, onDesktopMode, updates, onConnectMac, lastMacAddress,
                 nearbyMacs, onConnectNearby,
                 autoConnectEnabled = autoConnectEnabled,
+                share = ShareScreenUi(castTargets, sharingTo, castError, onCast, onStopCast),
                 onAutoConnect = onAutoConnect,
             )
         }

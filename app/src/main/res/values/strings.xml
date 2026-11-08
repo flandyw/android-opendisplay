@@ -25,6 +25,12 @@
     <string name="fg_channel_name">OpenDisplay</string>
     <string name="fg_channel_desc">Keeps the display session alive in the background</string>
     <string name="fg_title">OpenDisplay is ready</string>
+    <string name="cast_title">Share this screen</string>
+    <string name="cast_body">Show this device on a Mac running the OpenDisplay Receiver app, or on another OpenDisplay display.</string>
+    <string name="cast_to">Share to %1$s</string>
+    <string name="cast_notification_title">Sharing screen to %1$s</string>
+    <string name="cast_stop">Stop sharing</string>
+    <string name="cast_ended">Sharing stopped: %1$s</string>
     <string name="fg_text">Listening for your Mac — tap to return</string>
     <string name="updates_title">App updates</string>
     <string name="updates_button">App updates</string>
