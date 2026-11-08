@@ -47,6 +47,12 @@ targets:
     sources:
       - Mac
       - Shared
+      # Receive mode ("Use this Mac as a display"): the standalone receiver's
+      # controller and panel, without its app delegate, plist or icons.
+      - MacReceiver/MacReceiver.swift
+      - MacReceiver/ReceiverPanel.swift
+      - MacReceiver/PowerControl.swift
+      - MacReceiver/FullscreenPreference.swift
     dependencies:
       - package: Sparkle
     info:
@@ -57,7 +63,7 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSUIElement: true
-        NSLocalNetworkUsageDescription: OpenDisplay connects to your devices and lets Android devices find this Mac over the local network in WiFi mode.
+        NSLocalNetworkUsageDescription: OpenDisplay connects to your devices, lets Android devices find this Mac, and, when receiving, shows other devices' screens over the local network.
         NSBonjourServices: ["_opensidecar._tcp", "_opendisplay-mac._tcp"]
         LSApplicationCategoryType: public.app-category.utilities
         # --- Sparkle auto-update (issue #52) ---

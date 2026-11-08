@@ -54,6 +54,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if presentation != .menuBar {
             MainWindow.show()
         }
+        if UserDefaults.standard.bool(forKey: ReceiverController.enabledKey) {
+            ReceiverController.shared.start()
+        }
+    }
+
+    // Receiving: tell the connected sender we're closing so it stops redialing.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard ReceiverController.shared.active else { return .terminateNow }
+        ReceiverController.shared.stop {
+            DispatchQueue.main.async { NSApp.reply(toApplicationShouldTerminate: true) }
+        }
+        return .terminateLater
     }
 
     // Background/Dock modes: opening the app again (Spotlight, Finder, Dock
@@ -471,7 +483,8 @@ final class SenderController: ObservableObject {
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.discovered = Array(results)
+                // This Mac's own receive mode advertises the same service; never dial it.
+                self.discovered = Array(results).filter { self.txtID(of: $0) != StreamReceiver.installID }
                 self.endSessionsWhoseServiceVanished()
                 self.autoConnect()
                 self.connectNewlyCabled()
@@ -1201,6 +1214,7 @@ struct ContentView: View {
     @AppStorage(ClipboardSync.defaultsKey) private var clipboardSync = false
     @AppStorage("matchReceiverRefresh") private var matchRefresh = false
     @AppStorage("penBarrel2Action") private var penBarrel2Action = "none"
+    @AppStorage(ReceiverController.enabledKey) private var receiveEnabled = false
     // Shortcuts the tablet's gestures use that are switched off in System Settings.
     @State private var disabledShortcuts: [SymbolicHotKey] = []
 
@@ -1300,6 +1314,21 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                }
+
+                Section("Receive") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("Use this Mac as a display", isOn: $receiveEnabled)
+                            .onChange(of: receiveEnabled) { _, on in
+                                if on { ReceiverController.shared.start() } else { ReceiverController.shared.stop() }
+                            }
+                        Text("An Android device (Share this screen in its OpenDisplay app) or another Mac can show its screen here, in a window.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if receiveEnabled {
+                    ReceiverSections(controller: ReceiverController.shared)
                 }
 
                 Section("Options") {

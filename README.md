@@ -245,7 +245,8 @@ Grant Mac **Screen Recording** + **Accessibility** if prompted.
 
 ### Share this phone to a Mac (reverse)
 
-Open the **OpenDisplay Receiver** app on the Mac (`opendisplay/MacReceiver`). It
+In OpenDisplay on the Mac, turn on **Receive → Use this Mac as a display** (the
+standalone **OpenDisplay Receiver** app works too). The Mac
 appears under **Share this screen** on the Android connection page; tap it and
 accept Android's screen-capture prompt. The phone streams its screen as H.264
 over the normal OpenDisplay wire (Android acts as the *sender*), and keeps

@@ -19,6 +19,8 @@ import SwiftUI
 @MainActor
 final class ReceiverController: ObservableObject {
     static let shared = ReceiverController()
+    /// The sender app's "Use this Mac as a display" toggle (UserDefaults).
+    static let enabledKey = "receiveEnabled"
 
     // A fresh StreamReceiver per activation: stop() tears the old one down
     // and drops it, so listener/decoder state can't leak across mode flips.

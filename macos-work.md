@@ -25,6 +25,7 @@ The Mac app lives in `opendisplay/` (Swift). The wire formats are in
 | Mission Control opens directly when Ctrl+Up is switched off in System Settings; the control panel says which other gesture shortcuts are off | `SystemShortcuts`, `InputInjector` |
 | Clipboard sync toggle, and **images** both ways (`clipimg`) | `ClipboardSync`, `ContentView` |
 | **Android over USB** through `adb forward`, plug-in-and-go once "Detect Android devices over USB" is on | `AdbBridge`, `AdbDevices`, `SenderController` |
+| **Receive mode** in the main app: "Use this Mac as a display" runs the receiver (`MacReceiver/` sources) so Android "Share this screen" or another Mac can stream here; the sender skips its own receiver in discovery | `ContentView` Receive section, `ReceiverController`, `SenderController.startBrowsing` |
 | **Reverse connect** listener on `:9011` + Bonjour `_opendisplay-mac._tcp`, opt-in, each new device confirmed | `ReverseListener`, `SenderTransport.incoming`, `SenderController.acceptReverse` |
 
 ### Both Android transports are opt-in on purpose
