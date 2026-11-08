@@ -54,6 +54,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import app.opendisplay.receiver.net.MacAddress
 import app.opendisplay.receiver.net.NearbyMac
+import app.opendisplay.receiver.protocol.WireProtocol
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
@@ -222,7 +223,7 @@ fun ConnectionScreen(
                         DeviceIdentity(state, autoConnectEnabled, onAutoConnect) { sheet = ConnectionSheet.ADDRESS }
                     }
                 }
-                if (share != null && (share.targets.isNotEmpty() || share.sharingTo != null)) {
+                if (share != null) {
                     Box(Modifier.widthIn(max = 560.dp).fillMaxWidth().padding(top = 24.dp)) { ShareScreen(share) }
                 }
                 Column(Modifier.widthIn(max = 1120.dp).fillMaxWidth().padding(top = 20.dp),
@@ -383,11 +384,30 @@ private fun ShareScreen(share: ShareScreenUi) {
             share.error?.let {
                 Text(stringResource(R.string.cast_ended, it), style = MaterialTheme.typography.bodySmall, color = colors.error)
             }
+            if (share.targets.isEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    LoadingIndicator(Modifier.size(28.dp))
+                    Text(stringResource(R.string.cast_searching), style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
+                }
+            }
             share.targets.forEach { target ->
                 TextButton(onClick = { share.onShare(target) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                     Text(stringResource(R.string.cast_to, target.name), modifier = Modifier.weight(1f),
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Symbol(R.drawable.ic_arrow_forward)
+                }
+            }
+            var asking by rememberSaveable { mutableStateOf(false) }
+            TextButton(onClick = { asking = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.cast_enter_address))
+            }
+            if (asking) {
+                MacAddressDialog(initial = "", onDismiss = { asking = false }, body = R.string.cast_address_body) { address ->
+                    asking = false
+                    // No port typed parses as the Mac sender's 9011; receivers listen on 9000.
+                    val port = if (address.port == WireProtocol.MAC_REVERSE_PORT) WireProtocol.DEFAULT_PORT else address.port
+                    share.onShare(NearbyMac(address.host, address.host, port))
                 }
             }
         }
@@ -396,7 +416,12 @@ private fun ShareScreen(share: ShareScreenUi) {
 
 /** Asks for the address of a Mac to dial. A dialog, not a sheet: it needs the keyboard. */
 @Composable
-private fun MacAddressDialog(initial: String, onDismiss: () -> Unit, onConnect: (MacAddress) -> Unit) {
+private fun MacAddressDialog(
+    initial: String,
+    onDismiss: () -> Unit,
+    @StringRes body: Int = R.string.connection_mac_body,
+    onConnect: (MacAddress) -> Unit,
+) {
     var text by rememberSaveable { mutableStateOf(initial) }
     var showError by rememberSaveable { mutableStateOf(false) }
     val submit = {
@@ -408,7 +433,7 @@ private fun MacAddressDialog(initial: String, onDismiss: () -> Unit, onConnect: 
         title = { Text(stringResource(R.string.connection_mac_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(stringResource(R.string.connection_mac_body), style = MaterialTheme.typography.bodyMedium)
+                Text(stringResource(body), style = MaterialTheme.typography.bodyMedium)
                 OutlinedTextField(
                     value = text,
                     onValueChange = { text = it; showError = false },

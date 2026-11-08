@@ -29,6 +29,9 @@
     <string name="cast_body">Show this device on a Mac running the OpenDisplay Receiver app, or on another OpenDisplay display.</string>
     <string name="cast_to">Share to %1$s</string>
     <string name="cast_notification_title">Sharing screen to %1$s</string>
+    <string name="cast_searching">Looking for Macs running OpenDisplay Receiver on this Wi‑Fi…</string>
+    <string name="cast_enter_address">Enter Mac address</string>
+    <string name="cast_address_body">Open OpenDisplay Receiver on the Mac, then type the Mac’s IP address or name (System Settings → Wi‑Fi → Details).</string>
     <string name="cast_stop">Stop sharing</string>
     <string name="cast_ended">Sharing stopped: %1$s</string>
     <string name="fg_text">Listening for your Mac — tap to return</string>
